@@ -507,6 +507,45 @@ async def get_messages(chat_identifier: str, limit: int = 50):
         )
 
 
+@app.get(
+    "/messages/media",
+    tags=["messages"],
+)
+async def download_message_media(chat_identifier: str, message_id: int):
+    """
+    Скачивает медиа по ID сообщения.
+    
+    Используйте media_id из ответа /messages для message_id.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+    
+    try:
+        result = await client_manager.download_media(chat_identifier, message_id)
+        headers = {
+            "Content-Disposition": f'attachment; filename="{result["filename"]}"'
+        }
+        return Response(
+            content=result["data"],
+            media_type=result["content_type"],
+            headers=headers,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при скачивании медиа: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     """Глобальный обработчик исключений"""

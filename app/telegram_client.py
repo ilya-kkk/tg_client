@@ -12,7 +12,16 @@ from telethon.errors import (
     RPCError
 )
 from telethon.tl import functions, types
-from telethon.tl.types import User, Chat, Channel
+from telethon.tl.types import (
+    User,
+    Chat,
+    Channel,
+    MessageMediaPhoto,
+    MessageMediaDocument,
+    DocumentAttributeVideo,
+    DocumentAttributeAudio,
+    DocumentAttributeSticker,
+)
 from app.config import API_ID, API_HASH, SESSIONS_DIR, SESSION_NAME
 
 
@@ -332,19 +341,19 @@ class TelegramClientManager:
                 has_media = bool(getattr(msg, "media", None))
                 media_type: Optional[str] = None
                 if has_media and msg.media is not None:
-                    if isinstance(msg.media, types.MessageMediaPhoto):
+                    if isinstance(msg.media, MessageMediaPhoto):
                         media_type = "photo"
-                    elif isinstance(msg.media, types.MessageMediaDocument):
+                    elif isinstance(msg.media, MessageMediaDocument):
                         doc = msg.media.document
                         attrs = getattr(doc, "attributes", []) or []
                         for attr in attrs:
-                            if isinstance(attr, types.DocumentAttributeVideo):
+                            if isinstance(attr, DocumentAttributeVideo):
                                 media_type = "video"
                                 break
-                            if isinstance(attr, types.DocumentAttributeAudio):
+                            if isinstance(attr, DocumentAttributeAudio):
                                 media_type = "voice" if getattr(attr, "voice", False) else "audio"
                                 break
-                            if isinstance(attr, types.DocumentAttributeSticker):
+                            if isinstance(attr, DocumentAttributeSticker):
                                 media_type = "sticker"
                                 break
                         if media_type is None:
@@ -375,6 +384,71 @@ class TelegramClientManager:
         except ValueError as e:
             # Ошибки разрешения чата и подобное
             raise ValueError(f"Чат не найден или ошибка: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def download_media(self, chat_identifier: str, message_id: int) -> Dict[str, Any]:
+        """
+        Скачивает медиа по ID сообщения в чате.
+        
+        Args:
+            chat_identifier: Username чата (@username) или ID чата
+            message_id: ID сообщения (тот же, что возвращается как media_id)
+        
+        Returns:
+            Словарь с байтами файла, именем и content-type
+        """
+        if not self.client:
+            await self.init_client()
+        
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+        
+        try:
+            # Находим чат и сообщение
+            entity = await self.client.get_entity(chat_identifier)
+            msg = await self.client.get_messages(entity, ids=message_id)
+            if not msg:
+                raise ValueError("Сообщение не найдено")
+            
+            if not getattr(msg, "media", None):
+                raise ValueError("У сообщения нет медиа")
+            
+            # Определяем content-type и имя файла
+            content_type = "application/octet-stream"
+            filename: str = f"media_{message_id}"
+            
+            if isinstance(msg.media, MessageMediaPhoto):
+                content_type = "image/jpeg"
+                filename += ".jpg"
+            elif isinstance(msg.media, MessageMediaDocument):
+                doc = msg.media.document
+                if getattr(doc, "mime_type", None):
+                    content_type = doc.mime_type
+                # Пытаемся вытащить оригинальное имя файла
+                for attr in getattr(doc, "attributes", []) or []:
+                    if isinstance(attr, DocumentAttributeSticker):
+                        # стикеры могут быть webp / tgs / webm
+                        if content_type == "application/octet-stream":
+                            content_type = "image/webp"
+                        if not filename.endswith(".webp"):
+                            filename = f"sticker_{message_id}.webp"
+                    if hasattr(attr, "file_name"):
+                        filename = attr.file_name
+                        break
+            
+            # Скачиваем в память
+            data: bytes = await self.client.download_media(msg, file=bytes)
+            if not data:
+                raise ValueError("Не удалось скачать медиа")
+            
+            return {
+                "filename": filename,
+                "content_type": content_type,
+                "data": data,
+            }
         except FloodWaitError as e:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
