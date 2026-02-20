@@ -328,6 +328,30 @@ class TelegramClientManager:
                     elif hasattr(peer, "user_id"):
                         msg_chat_id = peer.user_id
                 
+                # Информация о медиа
+                has_media = bool(getattr(msg, "media", None))
+                media_type: Optional[str] = None
+                if has_media and msg.media is not None:
+                    if isinstance(msg.media, types.MessageMediaPhoto):
+                        media_type = "photo"
+                    elif isinstance(msg.media, types.MessageMediaDocument):
+                        doc = msg.media.document
+                        attrs = getattr(doc, "attributes", []) or []
+                        for attr in attrs:
+                            if isinstance(attr, types.DocumentAttributeVideo):
+                                media_type = "video"
+                                break
+                            if isinstance(attr, types.DocumentAttributeAudio):
+                                media_type = "voice" if getattr(attr, "voice", False) else "audio"
+                                break
+                            if isinstance(attr, types.DocumentAttributeSticker):
+                                media_type = "sticker"
+                                break
+                        if media_type is None:
+                            media_type = "document"
+                    else:
+                        media_type = "other"
+                
                 result_messages.append(
                     {
                         "id": msg.id,
@@ -336,6 +360,10 @@ class TelegramClientManager:
                         "text": msg.message or "",
                         "date": msg.date.isoformat() if msg.date else "",
                         "is_out": bool(getattr(msg, "out", False)),
+                        "has_media": has_media,
+                        "media_type": media_type,
+                        # Для скачивания медиа достаточно ID сообщения и chat_id
+                        "media_id": msg.id if has_media else None,
                     }
                 )
             

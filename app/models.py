@@ -158,6 +158,9 @@ class MessageInfo(BaseModel):
     text: str
     date: str
     is_out: bool = False
+    has_media: bool = False
+    media_type: Optional[str] = None  # photo, video, document, audio, voice, sticker, gif, etc.
+    media_id: Optional[int] = None  # ID сообщения, по которому можно скачать медиа
 
 
 class MessagesResponse(BaseModel):
