@@ -148,3 +148,22 @@ class FoldersResponse(BaseModel):
     success: bool
     folders: List[FolderInfo]
     total: int
+
+
+class MessageInfo(BaseModel):
+    """Информация о сообщении"""
+    id: int
+    chat_id: int
+    sender_id: Optional[int] = None
+    text: str
+    date: str
+    is_out: bool = False
+
+
+class MessagesResponse(BaseModel):
+    """Ответ со списком сообщений чата"""
+    success: bool
+    chat_id: int
+    chat_name: Optional[str] = None
+    messages: List[MessageInfo]
+    total: int

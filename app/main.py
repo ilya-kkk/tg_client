@@ -19,7 +19,9 @@ from app.models import (
     QRCodeStatusResponse,
     FolderChatsRequest,
     FoldersResponse,
-    FolderInfo
+    FolderInfo,
+    MessageInfo,
+    MessagesResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -27,6 +29,26 @@ import logging
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+tags_metadata = [
+    {
+        "name": "system",
+        "description": "Системные эндпоинты и статус сервиса",
+    },
+    {
+        "name": "auth",
+        "description": "Авторизация по номеру телефона, 2FA и QR-код",
+    },
+    {
+        "name": "chats",
+        "description": "Работа с чатами и папками (folders)",
+    },
+    {
+        "name": "messages",
+        "description": "Отправка и получение сообщений",
+    },
+]
 
 
 @asynccontextmanager
@@ -54,11 +76,12 @@ app = FastAPI(
     title="Telegram REST API",
     description="REST API для работы с Telegram через Telethon",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    openapi_tags=tags_metadata,
 )
 
 
-@app.get("/")
+@app.get("/", tags=["system"])
 async def root():
     """Корневой endpoint"""
     return {
@@ -68,7 +91,12 @@ async def root():
     }
 
 
-@app.post("/auth/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+@app.post(
+    "/auth/login",
+    response_model=LoginResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["auth"],
+)
 async def login(request: LoginRequest):
     """
     Отправляет код подтверждения на номер телефона.
@@ -92,7 +120,12 @@ async def login(request: LoginRequest):
         )
 
 
-@app.post("/auth/verify", response_model=VerifyResponse, status_code=status.HTTP_200_OK)
+@app.post(
+    "/auth/verify",
+    response_model=VerifyResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["auth"],
+)
 async def verify(request: VerifyRequest):
     """
     Подтверждает код авторизации.
@@ -116,7 +149,12 @@ async def verify(request: VerifyRequest):
         )
 
 
-@app.post("/auth/password", response_model=PasswordResponse, status_code=status.HTTP_200_OK)
+@app.post(
+    "/auth/password",
+    response_model=PasswordResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["auth"],
+)
 async def password(request: PasswordRequest):
     """
     Вводит пароль двухфакторной аутентификации.
@@ -139,7 +177,12 @@ async def password(request: PasswordRequest):
         )
 
 
-@app.get("/chats", response_model=ChatsResponse, status_code=status.HTTP_200_OK)
+@app.get(
+    "/chats",
+    response_model=ChatsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
 async def get_chats(limit: int = 100):
     """
     Получает список всех диалогов (чатов).
@@ -177,7 +220,12 @@ async def get_chats(limit: int = 100):
         )
 
 
-@app.get("/chats/folders", response_model=FoldersResponse, status_code=status.HTTP_200_OK)
+@app.get(
+    "/chats/folders",
+    response_model=FoldersResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
 async def get_folders():
     """
     Получает список всех доступных папок (dialog filters).
@@ -213,7 +261,12 @@ async def get_folders():
         )
 
 
-@app.post("/chats/folder", response_model=ChatsResponse, status_code=status.HTTP_200_OK)
+@app.post(
+    "/chats/folder",
+    response_model=ChatsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
 async def get_chats_by_folder(request: FolderChatsRequest):
     """
     Получает список чатов из указанной папки.
@@ -264,7 +317,12 @@ async def get_chats_by_folder(request: FolderChatsRequest):
         )
 
 
-@app.post("/auth/qr/generate", response_model=QRCodeGenerateResponse, status_code=status.HTTP_200_OK)
+@app.post(
+    "/auth/qr/generate",
+    response_model=QRCodeGenerateResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["auth"],
+)
 async def generate_qr_code():
     """
     Генерирует QR-код для авторизации через сканирование.
@@ -288,7 +346,12 @@ async def generate_qr_code():
         )
 
 
-@app.get("/auth/qr/status", response_model=QRCodeStatusResponse, status_code=status.HTTP_200_OK)
+@app.get(
+    "/auth/qr/status",
+    response_model=QRCodeStatusResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["auth"],
+)
 async def check_qr_status():
     """
     Проверяет статус QR-кода авторизации.
@@ -312,7 +375,7 @@ async def check_qr_status():
         )
 
 
-@app.get("/auth/qr/image")
+@app.get("/auth/qr/image", tags=["auth"])
 async def get_qr_code_image():
     """
     Генерирует и возвращает изображение QR-кода для авторизации.
@@ -357,7 +420,12 @@ async def get_qr_code_image():
         )
 
 
-@app.post("/messages/send", response_model=SendMessageResponse, status_code=status.HTTP_200_OK)
+@app.post(
+    "/messages/send",
+    response_model=SendMessageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
 async def send_message(request: SendMessageRequest):
     """
     Отправляет сообщение в чат.
@@ -390,6 +458,52 @@ async def send_message(request: SendMessageRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/messages",
+    response_model=MessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def get_messages(chat_identifier: str, limit: int = 50):
+    """
+    Получает последние сообщения из указанного чата.
+    
+    chat_identifier может быть:
+    - Username чата (например, @username)
+    - ID чата (число)
+    
+    limit - максимальное количество сообщений (по умолчанию 50).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+    
+    try:
+        result = await client_manager.get_messages(chat_identifier, limit=limit)
+        messages = [MessageInfo(**m) for m in result["messages"]]
+        
+        return MessagesResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            messages=messages,
+            total=len(messages),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
         )
 
 

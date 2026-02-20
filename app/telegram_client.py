@@ -259,6 +259,99 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
     
+    async def get_messages(self, chat_identifier: str, limit: int = 50) -> Dict[str, Any]:
+        """
+        Получает последние сообщения из указанного чата.
+        
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            limit: Максимальное количество сообщений
+        
+        Returns:
+            Словарь с информацией о чате и списком сообщений
+        """
+        if not self.client:
+            await self.init_client()
+        
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+        
+        try:
+            # Получаем сущность чата (User / Chat / Channel)
+            entity = await self.client.get_entity(chat_identifier)
+            
+            # Определяем ID и название чата
+            chat_id: Optional[int] = None
+            chat_name: Optional[str] = None
+            
+            if isinstance(entity, User):
+                chat_id = entity.id
+                chat_name = (entity.first_name or "") or "User"
+                if entity.last_name:
+                    chat_name = f"{chat_name} {entity.last_name}".strip()
+            elif isinstance(entity, (Chat, Channel)):
+                chat_id = entity.id
+                chat_name = getattr(entity, "title", None) or "Chat"
+            else:
+                chat_id = getattr(entity, "id", None)
+            
+            # Получаем сообщения
+            messages = await self.client.get_messages(entity, limit=limit)
+            
+            result_messages: List[Dict[str, Any]] = []
+            for msg in messages:
+                # Определяем sender_id
+                sender_id: Optional[int] = None
+                if hasattr(msg, "sender_id") and msg.sender_id is not None:
+                    # В новых версиях Telethon sender_id обычно int
+                    try:
+                        sender_id = int(msg.sender_id)
+                    except (TypeError, ValueError):
+                        sender_id = None
+                elif hasattr(msg, "from_id") and msg.from_id is not None:
+                    from_id = msg.from_id
+                    if isinstance(from_id, types.PeerUser):
+                        sender_id = from_id.user_id
+                    elif isinstance(from_id, types.PeerChat):
+                        sender_id = from_id.chat_id
+                    elif isinstance(from_id, types.PeerChannel):
+                        sender_id = from_id.channel_id
+                
+                # Определяем chat_id из peer_id (на случай, если сверху не удалось)
+                msg_chat_id: Optional[int] = chat_id
+                if hasattr(msg, "peer_id") and msg.peer_id is not None:
+                    peer = msg.peer_id
+                    if hasattr(peer, "channel_id"):
+                        msg_chat_id = peer.channel_id
+                    elif hasattr(peer, "chat_id"):
+                        msg_chat_id = peer.chat_id
+                    elif hasattr(peer, "user_id"):
+                        msg_chat_id = peer.user_id
+                
+                result_messages.append(
+                    {
+                        "id": msg.id,
+                        "chat_id": msg_chat_id if msg_chat_id is not None else (chat_id or 0),
+                        "sender_id": sender_id,
+                        "text": msg.message or "",
+                        "date": msg.date.isoformat() if msg.date else "",
+                        "is_out": bool(getattr(msg, "out", False)),
+                    }
+                )
+            
+            return {
+                "chat_id": chat_id if chat_id is not None else 0,
+                "chat_name": chat_name,
+                "messages": result_messages,
+            }
+        except ValueError as e:
+            # Ошибки разрешения чата и подобное
+            raise ValueError(f"Чат не найден или ошибка: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+    
     async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
         Получает список чатов из указанной папки.
