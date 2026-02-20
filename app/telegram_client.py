@@ -259,6 +259,299 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
     
+    async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Получает список чатов из указанной папки.
+        
+        Args:
+            folder_name: Название папки (например, "Работа", "Личное")
+            limit: Максимальное количество чатов
+        
+        Returns:
+            Список словарей с информацией о чатах из папки
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not self.client:
+            await self.init_client()
+        
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+        
+        try:
+            # Получаем список всех папок (dialog filters)
+            logger.info(f"Получение списка папок для поиска '{folder_name}'...")
+            filters_result = await self.client(functions.messages.GetDialogFiltersRequest())
+            
+            # Логируем структуру ответа для отладки
+            logger.debug(f"Тип результата: {type(filters_result)}")
+            logger.debug(f"Атрибуты результата: {dir(filters_result)}")
+            
+            # Ищем папку по названию и сохраняем сам объект фильтра
+            folder_filter_obj = None  # Будем хранить сам объект DialogFilter
+            available_folders = []
+            
+            # Проверяем разные варианты структуры ответа
+            filters_list = None
+            
+            # Вариант 1: filters_result.filters
+            if hasattr(filters_result, 'filters'):
+                filters_list = filters_result.filters
+                logger.debug(f"Найдено атрибут 'filters': {len(filters_list) if filters_list else 0} элементов")
+            
+            # Вариант 2: если результат - это список
+            elif isinstance(filters_result, list):
+                filters_list = filters_result
+                logger.debug(f"Результат - это список: {len(filters_list)} элементов")
+            
+            # Вариант 3: если есть другие атрибуты
+            else:
+                # Пробуем найти список фильтров в других атрибутах
+                for attr in dir(filters_result):
+                    if not attr.startswith('_'):
+                        try:
+                            attr_value = getattr(filters_result, attr, None)
+                            if isinstance(attr_value, list):
+                                filters_list = attr_value
+                                logger.debug(f"Найден список в атрибуте '{attr}': {len(filters_list)} элементов")
+                                break
+                        except:
+                            pass
+            
+            if filters_list:
+                logger.info(f"Найдено {len(filters_list)} папок/фильтров")
+                for idx, dialog_filter in enumerate(filters_list):
+                    logger.debug(f"Фильтр #{idx}: тип={type(dialog_filter).__name__}")
+                    
+                    # Пробуем получить название разными способами
+                    filter_title = None
+                    
+                    # Вариант 1: атрибут title
+                    if hasattr(dialog_filter, 'title'):
+                        filter_title = dialog_filter.title
+                        logger.debug(f"  Название (title): '{filter_title}'")
+                    
+                    # Вариант 2: может быть в других атрибутах
+                    if not filter_title:
+                        for attr in ['name', 'title', 'Title']:
+                            if hasattr(dialog_filter, attr):
+                                filter_title = getattr(dialog_filter, attr)
+                                logger.debug(f"  Название ({attr}): '{filter_title}'")
+                                break
+                    
+                    # Получаем ID папки
+                    if hasattr(dialog_filter, 'id'):
+                        filter_id = dialog_filter.id
+                    elif hasattr(dialog_filter, 'Id'):
+                        filter_id = getattr(dialog_filter, 'Id')
+                    else:
+                        filter_id = None
+                    
+                    if filter_title:
+                        available_folders.append(filter_title)
+                        logger.debug(f"  Доступная папка: '{filter_title}' (ID: {filter_id})")
+                        
+                        # Сравниваем названия (без учета регистра)
+                        if filter_title.lower() == folder_name.lower():
+                            folder_filter_obj = dialog_filter  # Сохраняем сам объект фильтра
+                            logger.info(f"✓ Найдена папка '{filter_title}' с ID: {filter_id}")
+                            break
+            else:
+                logger.warning("Не удалось найти список папок в ответе от API")
+                logger.debug(f"Тип результата: {type(filters_result)}")
+                logger.debug(f"Атрибуты: {[a for a in dir(filters_result) if not a.startswith('_')]}")
+            
+            if folder_filter_obj is None:
+                available_folders_str = ", ".join(available_folders) if available_folders else "нет доступных папок"
+                logger.warning(f"Папка '{folder_name}' не найдена. Доступные: {available_folders_str}")
+                raise ValueError(
+                    f"Папка '{folder_name}' не найдена. "
+                    f"Доступные папки: {available_folders_str}"
+                )
+            
+            # Получаем чаты из папки
+            # Используем информацию из DialogFilter для фильтрации диалогов
+            logger.info(f"Получение чатов из папки '{folder_name}'...")
+            dialogs = []
+            
+            # Получаем список всех диалогов
+            logger.info("Получение всех диалогов для фильтрации...")
+            all_dialogs = []
+            async for dialog in self.client.iter_dialogs(limit=1000):  # Получаем больше, чтобы найти все
+                all_dialogs.append(dialog)
+            
+            logger.info(f"Получено {len(all_dialogs)} диалогов для фильтрации")
+            
+            # Получаем список include_peers из фильтра папки
+            include_peers = []
+            if hasattr(folder_filter_obj, 'include_peers'):
+                include_peers = folder_filter_obj.include_peers
+                logger.info(f"В папке '{folder_name}' указано {len(include_peers)} чатов в include_peers")
+            
+            # Если есть include_peers, фильтруем по ним
+            if include_peers:
+                # Создаем множество ID чатов из include_peers
+                included_chat_ids = set()
+                for peer in include_peers:
+                    if isinstance(peer, types.InputPeerUser):
+                        included_chat_ids.add(peer.user_id)
+                    elif isinstance(peer, types.InputPeerChat):
+                        included_chat_ids.add(peer.chat_id)
+                    elif isinstance(peer, types.InputPeerChannel):
+                        included_chat_ids.add(peer.channel_id)
+                
+                logger.info(f"Фильтруем диалоги по {len(included_chat_ids)} ID чатов")
+                
+                # Фильтруем диалоги
+                filtered_dialogs = []
+                for dialog in all_dialogs:
+                    entity = dialog.entity
+                    entity_id = None
+                    
+                    if isinstance(entity, User):
+                        entity_id = entity.id
+                    elif isinstance(entity, Chat):
+                        entity_id = -entity.id  # Группы имеют отрицательный ID
+                    elif isinstance(entity, Channel):
+                        entity_id = entity.id
+                    
+                    # Проверяем, входит ли чат в папку
+                    if entity_id in included_chat_ids:
+                        filtered_dialogs.append(dialog)
+                        if len(filtered_dialogs) >= limit:
+                            break
+                
+                all_dialogs = filtered_dialogs
+                logger.info(f"После фильтрации осталось {len(all_dialogs)} диалогов")
+            else:
+                logger.warning("В папке нет include_peers, возвращаем все диалоги")
+                all_dialogs = all_dialogs[:limit]
+            
+            # Формируем результат
+            for dialog in all_dialogs[:limit]:
+                chat_info = {
+                    "id": dialog.id,
+                    "name": dialog.name,
+                    "type": None,
+                    "username": None,
+                    "unread_count": dialog.unread_count,
+                    "is_pinned": dialog.pinned,
+                    "is_verified": False,
+                    "is_scam": False,
+                    "is_fake": False
+                }
+                
+                entity = dialog.entity
+                
+                if isinstance(entity, User):
+                    chat_info["type"] = "user"
+                    chat_info["username"] = entity.username
+                    chat_info["is_verified"] = entity.verified
+                    chat_info["is_scam"] = entity.scam
+                    chat_info["is_fake"] = entity.fake
+                elif isinstance(entity, Chat):
+                    chat_info["type"] = "group"
+                elif isinstance(entity, Channel):
+                    chat_info["type"] = "channel" if entity.broadcast else "supergroup"
+                    chat_info["username"] = entity.username
+                    chat_info["is_verified"] = entity.verified
+                    chat_info["is_scam"] = entity.scam
+                    chat_info["is_fake"] = entity.fake
+                
+                dialogs.append(chat_info)
+            
+            logger.info(f"Найдено {len(dialogs)} чатов в папке '{folder_name}'")
+            return dialogs
+            
+        except ValueError:
+            # Пробрасываем ValueError дальше (например, папка не найдена)
+            raise
+        except RPCError as e:
+            logger.error(f"Ошибка Telegram API при получении чатов из папки: {e.message}")
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при получении чатов из папки: {e}", exc_info=True)
+            raise ValueError(f"Ошибка при получении чатов из папки: {str(e)}")
+    
+    async def get_folders_list(self) -> List[Dict[str, Any]]:
+        """
+        Получает список всех доступных папок (dialog filters).
+        
+        Returns:
+            Список словарей с информацией о папках
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not self.client:
+            await self.init_client()
+        
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+        
+        try:
+            logger.info("Получение списка всех папок...")
+            filters_result = await self.client(functions.messages.GetDialogFiltersRequest())
+            
+            folders = []
+            filters_list = None
+            
+            # Проверяем разные варианты структуры ответа
+            if hasattr(filters_result, 'filters'):
+                filters_list = filters_result.filters
+            elif isinstance(filters_result, list):
+                filters_list = filters_result
+            else:
+                # Пробуем найти список фильтров в других атрибутах
+                for attr in dir(filters_result):
+                    if not attr.startswith('_'):
+                        try:
+                            attr_value = getattr(filters_result, attr, None)
+                            if isinstance(attr_value, list):
+                                filters_list = attr_value
+                                break
+                        except:
+                            pass
+            
+            if filters_list:
+                logger.info(f"Найдено {len(filters_list)} папок/фильтров")
+                for dialog_filter in filters_list:
+                    filter_title = None
+                    filter_id = None
+                    
+                    # Получаем название
+                    if hasattr(dialog_filter, 'title'):
+                        filter_title = dialog_filter.title
+                    else:
+                        for attr in ['name', 'title', 'Title']:
+                            if hasattr(dialog_filter, attr):
+                                filter_title = getattr(dialog_filter, attr)
+                                break
+                    
+                    # Если название пустое, используем ID как название
+                    if not filter_title:
+                        filter_title = f"Папка {dialog_filter.id if hasattr(dialog_filter, 'id') else 'Без названия'}"
+                    
+                    # Получаем ID
+                    if hasattr(dialog_filter, 'id'):
+                        filter_id = dialog_filter.id
+                    
+                    folders.append({
+                        "name": filter_title,
+                        "id": filter_id
+                    })
+            
+            logger.info(f"Возвращаем {len(folders)} папок")
+            return folders
+            
+        except RPCError as e:
+            logger.error(f"Ошибка Telegram API при получении списка папок: {e.message}")
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при получении списка папок: {e}", exc_info=True)
+            raise ValueError(f"Ошибка при получении списка папок: {str(e)}")
+    
     async def disconnect(self):
         """Отключает клиент"""
         if self.client:

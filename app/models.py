@@ -121,3 +121,30 @@ class QRCodeStatusResponse(BaseModel):
     success: bool
     authorized: bool
     message: str
+
+
+class FolderChatsRequest(BaseModel):
+    """Запрос на получение чатов из папки"""
+    folder_name: str = Field(..., description="Название папки (например, 'Работа', 'Личное')", min_length=1)
+    limit: int = Field(100, description="Максимальное количество чатов", ge=1, le=1000)
+    
+    @field_validator('folder_name')
+    @classmethod
+    def validate_folder_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError('Название папки не может быть пустым')
+        return v
+
+
+class FolderInfo(BaseModel):
+    """Информация о папке"""
+    name: str
+    id: Optional[int] = None
+
+
+class FoldersResponse(BaseModel):
+    """Ответ со списком папок"""
+    success: bool
+    folders: List[FolderInfo]
+    total: int

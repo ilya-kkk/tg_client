@@ -16,7 +16,10 @@ from app.models import (
     ErrorResponse,
     ChatInfo,
     QRCodeGenerateResponse,
-    QRCodeStatusResponse
+    QRCodeStatusResponse,
+    FolderChatsRequest,
+    FoldersResponse,
+    FolderInfo
 )
 from app.telegram_client import client_manager
 import logging
@@ -168,6 +171,93 @@ async def get_chats(limit: int = 100):
         )
     except Exception as e:
         logger.error(f"Ошибка при получении списка чатов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get("/chats/folders", response_model=FoldersResponse, status_code=status.HTTP_200_OK)
+async def get_folders():
+    """
+    Получает список всех доступных папок (dialog filters).
+    
+    Используйте этот endpoint, чтобы узнать названия ваших папок,
+    а затем используйте /chats/folder для получения чатов из конкретной папки.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+    
+    try:
+        folders = await client_manager.get_folders_list()
+        folder_infos = [FolderInfo(**folder) for folder in folders]
+        
+        return FoldersResponse(
+            success=True,
+            folders=folder_infos,
+            total=len(folder_infos)
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка папок: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post("/chats/folder", response_model=ChatsResponse, status_code=status.HTTP_200_OK)
+async def get_chats_by_folder(request: FolderChatsRequest):
+    """
+    Получает список чатов из указанной папки.
+    
+    Папки (folders) - это пользовательские фильтры диалогов в Telegram,
+    которые можно создать в настройках приложения.
+    
+    Сначала используйте GET /chats/folders, чтобы узнать названия ваших папок.
+    
+    Args:
+        request: Запрос с названием папки и лимитом чатов
+    
+    Примеры названий папок:
+    - "Работа"
+    - "Личное"
+    - "Важное"
+    - "1"
+    - и другие папки, созданные пользователем
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+    
+    try:
+        dialogs = await client_manager.get_dialogs_by_folder(
+            folder_name=request.folder_name,
+            limit=request.limit
+        )
+        chats = [ChatInfo(**dialog) for dialog in dialogs]
+        
+        return ChatsResponse(
+            success=True,
+            chats=chats,
+            total=len(chats)
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении чатов из папки: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
