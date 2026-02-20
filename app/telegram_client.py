@@ -1,0 +1,517 @@
+import asyncio
+import base64
+import time
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+from telethon import TelegramClient
+from telethon.errors import (
+    SessionPasswordNeededError,
+    PhoneCodeInvalidError,
+    PhoneNumberInvalidError,
+    FloodWaitError,
+    RPCError
+)
+from telethon.tl import functions, types
+from telethon.tl.types import User, Chat, Channel
+from app.config import API_ID, API_HASH, SESSIONS_DIR, SESSION_NAME
+
+
+class TelegramClientManager:
+    """Менеджер для управления Telethon клиентом"""
+    
+    def __init__(self):
+        self.client: Optional[TelegramClient] = None
+        self.phone_code_hash: Optional[str] = None
+        self.phone: Optional[str] = None
+        self._is_connected = False
+        self._qr_login_token: Optional[bytes] = None
+        self._qr_expires_at: Optional[int] = None
+    
+    async def init_client(self) -> bool:
+        """
+        Инициализирует клиент и проверяет существующую сессию.
+        Возвращает True если авторизация успешна, False если нужна авторизация.
+        """
+        if not API_ID or not API_HASH:
+            raise ValueError("API_ID и API_HASH должны быть установлены")
+        
+        session_path = SESSIONS_DIR / SESSION_NAME
+        
+        self.client = TelegramClient(
+            str(session_path),
+            int(API_ID),
+            API_HASH
+        )
+        
+        await self.client.connect()
+        
+        if await self.client.is_user_authorized():
+            self._is_connected = True
+            return True
+        
+        return False
+    
+    async def send_code(self, phone: str, force_sms: bool = False) -> Dict[str, Any]:
+        # Примечание: параметр force_sms игнорируется, так как Telegram больше не поддерживает эту функцию
+        """
+        Отправляет код подтверждения на телефон.
+        
+        Args:
+            phone: Номер телефона в международном формате (например, +79991234567)
+            force_sms: Если True, принудительно запросить код по SMS вместо Telegram приложения
+        
+        Returns:
+            Словарь с phone_code_hash для дальнейшей авторизации
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not self.client:
+            await self.init_client()
+        
+        try:
+            logger.info(f"Отправка кода на номер: {phone}")
+            self.phone = phone
+            
+            # Примечание: force_sms больше не работает в Telegram API
+            # Telegram сам решает, как отправить код (обычно через приложение)
+            result = await self.client.send_code_request(phone)
+            self.phone_code_hash = result.phone_code_hash
+            
+            logger.info(f"Код успешно отправлен. Тип отправки: {result.type}")
+            
+            # Определяем тип отправки для сообщения
+            code_type_str = str(result.type)
+            if "sms" in code_type_str.lower() or "Sms" in code_type_str:
+                code_type = "SMS"
+                message = "Код отправлен по SMS на ваш номер телефона"
+            elif "app" in code_type_str.lower():
+                code_type = "Telegram приложение"
+                message = "Код отправлен в Telegram приложение. Проверьте все устройства, где открыт Telegram (телефон, компьютер, веб-версия)"
+            else:
+                code_type = "Telegram"
+                message = f"Код отправлен ({code_type_str})"
+            
+            return {
+                "success": True,
+                "phone_code_hash": result.phone_code_hash,
+                "message": message
+            }
+        except PhoneNumberInvalidError:
+            logger.error(f"Неверный номер телефона: {phone}")
+            raise ValueError("Неверный номер телефона")
+        except FloodWaitError as e:
+            logger.error(f"Слишком много запросов. Ожидание: {e.seconds} секунд")
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            logger.error(f"Ошибка Telegram API: {e.message}")
+            # Если ошибка AUTH_KEY, значит код уже был запрошен
+            if "AUTH_KEY" in str(e.message):
+                raise ValueError("Код уже был отправлен. Проверьте Telegram приложение для получения кода. Не запрашивайте код повторно.")
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при отправке кода: {e}", exc_info=True)
+            raise ValueError(f"Ошибка при отправке кода: {str(e)}")
+    
+    async def sign_in(self, phone: str, code: str) -> Dict[str, Any]:
+        """
+        Вход с кодом подтверждения.
+        
+        Args:
+            phone: Номер телефона
+            code: Код подтверждения из Telegram
+        
+        Returns:
+            Статус авторизации
+        """
+        if not self.client:
+            await self.init_client()
+        
+        if not self.phone_code_hash:
+            raise ValueError("Сначала вызовите /auth/login")
+        
+        try:
+            await self.client.sign_in(phone, code, phone_code_hash=self.phone_code_hash)
+            self._is_connected = True
+            self.phone_code_hash = None
+            
+            return {
+                "success": True,
+                "message": "Авторизация успешна"
+            }
+        except SessionPasswordNeededError:
+            return {
+                "success": False,
+                "password_required": True,
+                "message": "Требуется пароль двухфакторной аутентификации"
+            }
+        except PhoneCodeInvalidError:
+            raise ValueError("Неверный код подтверждения")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+    
+    async def sign_in_password(self, password: str) -> Dict[str, Any]:
+        """
+        Вход с паролем двухфакторной аутентификации.
+        
+        Args:
+            password: Пароль 2FA
+        
+        Returns:
+            Статус авторизации
+        """
+        if not self.client:
+            await self.init_client()
+        
+        try:
+            await self.client.sign_in(password=password)
+            self._is_connected = True
+            
+            return {
+                "success": True,
+                "message": "Авторизация успешна"
+            }
+        except RPCError as e:
+            raise ValueError(f"Неверный пароль или ошибка: {e.message}")
+    
+    async def get_dialogs(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Получает список всех диалогов (чатов).
+        
+        Args:
+            limit: Максимальное количество диалогов
+        
+        Returns:
+            Список словарей с информацией о чатах
+        """
+        if not self.client:
+            await self.init_client()
+        
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+        
+        dialogs = []
+        async for dialog in self.client.iter_dialogs(limit=limit):
+            chat_info = {
+                "id": dialog.id,
+                "name": dialog.name,
+                "type": None,
+                "username": None,
+                "unread_count": dialog.unread_count,
+                "is_pinned": dialog.pinned,
+                "is_verified": False,
+                "is_scam": False,
+                "is_fake": False
+            }
+            
+            entity = dialog.entity
+            
+            if isinstance(entity, User):
+                chat_info["type"] = "user"
+                chat_info["username"] = entity.username
+                chat_info["is_verified"] = entity.verified
+                chat_info["is_scam"] = entity.scam
+                chat_info["is_fake"] = entity.fake
+            elif isinstance(entity, Chat):
+                chat_info["type"] = "group"
+            elif isinstance(entity, Channel):
+                chat_info["type"] = "channel" if entity.broadcast else "supergroup"
+                chat_info["username"] = entity.username
+                chat_info["is_verified"] = entity.verified
+                chat_info["is_scam"] = entity.scam
+                chat_info["is_fake"] = entity.fake
+            
+            dialogs.append(chat_info)
+        
+        return dialogs
+    
+    async def send_message(self, chat_identifier: str, message: str) -> Dict[str, Any]:
+        """
+        Отправляет сообщение в чат.
+        
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            message: Текст сообщения
+        
+        Returns:
+            Информация об отправленном сообщении
+        """
+        if not self.client:
+            await self.init_client()
+        
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+        
+        try:
+            sent_message = await self.client.send_message(chat_identifier, message)
+            
+            return {
+                "success": True,
+                "message_id": sent_message.id,
+                "chat_id": sent_message.peer_id.channel_id if hasattr(sent_message.peer_id, 'channel_id') else sent_message.peer_id.user_id,
+                "date": sent_message.date.isoformat() if sent_message.date else None,
+                "message": "Сообщение отправлено"
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много сообщений. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+    
+    async def disconnect(self):
+        """Отключает клиент"""
+        if self.client:
+            await self.client.disconnect()
+            self._is_connected = False
+    
+    def is_connected(self) -> bool:
+        """Проверяет, авторизован ли клиент"""
+        return self._is_connected
+    
+    async def generate_qr_code(self) -> Dict[str, Any]:
+        """
+        Генерирует QR-код для авторизации через сканирование.
+        
+        Returns:
+            Словарь с QR-кодом URL и данными для отображения
+        """
+        import logging
+        import time
+        logger = logging.getLogger(__name__)
+        
+        if not self.client:
+            await self.init_client()
+        
+        try:
+            logger.info("Генерация QR-кода для авторизации...")
+            
+            # Вызываем exportLoginToken
+            result = await self.client(functions.auth.ExportLoginTokenRequest(
+                api_id=int(API_ID),
+                api_hash=API_HASH,
+                except_ids=[]
+            ))
+            
+            # Проверяем тип результата
+            if isinstance(result, types.auth.LoginToken):
+                # Успешно получили токен
+                token = result.token
+                expires = result.expires
+                
+                # Обрабатываем expires (может быть int или datetime)
+                if isinstance(expires, datetime):
+                    # Если это datetime, вычисляем разницу в секундах
+                    # Используем timestamp для корректного сравнения с timezone
+                    expires_timestamp = int(expires.timestamp())
+                    current_timestamp = int(time.time())
+                    expires_seconds = expires_timestamp - current_timestamp
+                else:
+                    # Если это int (количество секунд)
+                    expires_seconds = int(expires)
+                    expires_timestamp = int(time.time()) + expires_seconds
+                
+                self._qr_login_token = token
+                self._qr_expires_at = expires_timestamp
+                
+                # Кодируем токен в base64url
+                token_b64 = base64.urlsafe_b64encode(token).decode('utf-8').rstrip('=')
+                
+                # Создаем URL для QR-кода
+                qr_url = f"tg://login?token={token_b64}"
+                
+                logger.info(f"QR-код сгенерирован. Истекает через {expires_seconds} секунд")
+                
+                return {
+                    "success": True,
+                    "qr_url": qr_url,
+                    "qr_code_data": token_b64,
+                    "expires_in": expires_seconds,
+                    "message": f"QR-код сгенерирован. Отсканируйте его в Telegram приложении. Действителен {expires_seconds} секунд."
+                }
+            elif isinstance(result, types.auth.LoginTokenSuccess):
+                # Уже авторизован!
+                logger.info("Уже авторизован через QR-код")
+                self._is_connected = True
+                return {
+                    "success": True,
+                    "authorized": True,
+                    "message": "Авторизация успешна через QR-код"
+                }
+            else:
+                logger.error(f"Неожиданный тип результата: {type(result)}")
+                raise ValueError(f"Неожиданный ответ от сервера: {type(result)}")
+                
+        except RPCError as e:
+            logger.error(f"Ошибка Telegram API при генерации QR-кода: {e.message}")
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при генерации QR-кода: {e}", exc_info=True)
+            raise ValueError(f"Ошибка при генерации QR-кода: {str(e)}")
+    
+    async def check_qr_status(self) -> Dict[str, Any]:
+        """
+        Проверяет статус QR-кода авторизации.
+        Должен вызываться периодически после генерации QR-кода.
+        
+        Returns:
+            Статус авторизации
+        """
+        import logging
+        import time
+        logger = logging.getLogger(__name__)
+        
+        if not self.client:
+            await self.init_client()
+        
+        # Сначала проверяем, не авторизованы ли мы уже
+        # Переподключаемся для обновления состояния
+        if self.client:
+            await self.client.disconnect()
+            await self.client.connect()
+        
+        if await self.client.is_user_authorized():
+            logger.info("Клиент уже авторизован")
+            self._is_connected = True
+            self._qr_login_token = None
+            self._qr_expires_at = None
+            return {
+                "success": True,
+                "authorized": True,
+                "message": "Авторизация успешна через QR-код"
+            }
+        
+        if not self._qr_login_token:
+            raise ValueError("Сначала вызовите /auth/qr/generate")
+        
+        # Проверяем, не истек ли токен
+        if self._qr_expires_at and int(time.time()) >= self._qr_expires_at:
+            raise ValueError("QR-код истек. Сгенерируйте новый через /auth/qr/generate")
+        
+        try:
+            # Вызываем exportLoginToken снова для проверки статуса
+            result = await self.client(functions.auth.ExportLoginTokenRequest(
+                api_id=int(API_ID),
+                api_hash=API_HASH,
+                except_ids=[]
+            ))
+            
+            if isinstance(result, types.auth.LoginTokenSuccess):
+                # Успешная авторизация!
+                logger.info("QR-код авторизация успешна")
+                # Проверяем авторизацию еще раз для уверенности
+                if await self.client.is_user_authorized():
+                    # Сохраняем сессию явно
+                    await self.client.disconnect()
+                    await self.client.connect()
+                    # Проверяем еще раз после переподключения
+                    if await self.client.is_user_authorized():
+                        self._is_connected = True
+                        self._qr_login_token = None
+                        self._qr_expires_at = None
+                        
+                        return {
+                            "success": True,
+                            "authorized": True,
+                            "message": "Авторизация успешна через QR-код"
+                        }
+                else:
+                    logger.warning("LoginTokenSuccess получен, но is_user_authorized() вернул False")
+                    return {
+                        "success": False,
+                        "authorized": False,
+                        "message": "QR-код принят, но авторизация еще не завершена. Попробуйте еще раз через несколько секунд."
+                    }
+            elif isinstance(result, types.auth.LoginTokenMigrateTo):
+                # Нужно мигрировать на другой DC
+                logger.info(f"Миграция на DC {result.dc_id}")
+                token = result.token
+                
+                # Импортируем токен на новый DC
+                import_result = await self.client(functions.auth.ImportLoginTokenRequest(token))
+                
+                if isinstance(import_result, types.auth.LoginTokenSuccess):
+                    logger.info("Миграция и авторизация успешны")
+                    # Сохраняем сессию явно
+                    await self.client.disconnect()
+                    await self.client.connect()
+                    # Проверяем авторизацию
+                    if await self.client.is_user_authorized():
+                        self._is_connected = True
+                        self._qr_login_token = None
+                        self._qr_expires_at = None
+                        
+                        return {
+                            "success": True,
+                            "authorized": True,
+                            "message": "Авторизация успешна через QR-код (после миграции)"
+                        }
+                    else:
+                        logger.warning("ImportLoginToken успешен, но is_user_authorized() вернул False")
+                        return {
+                            "success": False,
+                            "authorized": False,
+                            "message": "Миграция завершена, но авторизация еще не завершена. Попробуйте еще раз."
+                        }
+                else:
+                    raise ValueError(f"Ошибка при импорте токена: {type(import_result)}")
+            elif isinstance(result, types.auth.LoginToken):
+                # Токен еще не принят, но проверяем авторизацию на всякий случай
+                if await self.client.is_user_authorized():
+                    logger.info("Обнаружена авторизация при проверке статуса")
+                    self._is_connected = True
+                    self._qr_login_token = None
+                    self._qr_expires_at = None
+                    return {
+                        "success": True,
+                        "authorized": True,
+                        "message": "Авторизация успешна через QR-код"
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "authorized": False,
+                        "message": "QR-код еще не отсканирован. Продолжайте сканирование."
+                    }
+            else:
+                raise ValueError(f"Неожиданный ответ: {type(result)}")
+                
+        except RPCError as e:
+            error_msg = str(e.message)
+            if "AUTH_TOKEN_EXPIRED" in error_msg:
+                raise ValueError("QR-код истек. Сгенерируйте новый через /auth/qr/generate")
+            elif "AUTH_TOKEN_INVALID" in error_msg:
+                raise ValueError("QR-код недействителен. Сгенерируйте новый")
+            elif "AUTH_TOKEN_ALREADY_ACCEPTED" in error_msg:
+                # Токен уже принят, проверяем авторизацию
+                logger.info("Токен уже принят, проверяем авторизацию")
+                # Переподключаемся для обновления состояния
+                await self.client.disconnect()
+                await self.client.connect()
+                if await self.client.is_user_authorized():
+                    self._is_connected = True
+                    self._qr_login_token = None
+                    self._qr_expires_at = None
+                    return {
+                        "success": True,
+                        "authorized": True,
+                        "message": "Авторизация успешна"
+                    }
+                else:
+                    # Возможно, нужно подождать немного
+                    logger.warning("Токен принят, но авторизация еще не завершена")
+                    return {
+                        "success": False,
+                        "authorized": False,
+                        "message": "QR-код принят, но авторизация еще не завершена. Попробуйте еще раз через несколько секунд."
+                    }
+            else:
+                logger.error(f"Ошибка Telegram API: {e.message}")
+                raise ValueError(f"Ошибка Telegram API: {e.message}")
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при проверке QR-кода: {e}", exc_info=True)
+            raise ValueError(f"Ошибка при проверке QR-кода: {str(e)}")
+
+
+# Глобальный экземпляр менеджера
+client_manager = TelegramClientManager()

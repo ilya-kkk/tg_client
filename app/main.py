@@ -1,0 +1,322 @@
+from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import JSONResponse, Response
+from contextlib import asynccontextmanager
+import io
+import qrcode
+from app.models import (
+    LoginRequest,
+    LoginResponse,
+    VerifyRequest,
+    VerifyResponse,
+    PasswordRequest,
+    PasswordResponse,
+    ChatsResponse,
+    SendMessageRequest,
+    SendMessageResponse,
+    ErrorResponse,
+    ChatInfo,
+    QRCodeGenerateResponse,
+    QRCodeStatusResponse
+)
+from app.telegram_client import client_manager
+import logging
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Управление жизненным циклом приложения"""
+    # При старте приложения
+    try:
+        logger.info("Инициализация Telegram клиента...")
+        is_authorized = await client_manager.init_client()
+        if is_authorized:
+            logger.info("Клиент авторизован с существующей сессией")
+        else:
+            logger.info("Требуется авторизация через API")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации клиента: {e}")
+    
+    yield
+    
+    # При остановке приложения
+    logger.info("Отключение Telegram клиента...")
+    await client_manager.disconnect()
+
+
+app = FastAPI(
+    title="Telegram REST API",
+    description="REST API для работы с Telegram через Telethon",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+
+@app.get("/")
+async def root():
+    """Корневой endpoint"""
+    return {
+        "message": "Telegram REST API",
+        "status": "running",
+        "authorized": client_manager.is_connected()
+    }
+
+
+@app.post("/auth/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+async def login(request: LoginRequest):
+    """
+    Отправляет код подтверждения на номер телефона.
+    
+    Номер телефона должен быть в международном формате (например, +79991234567).
+    Код придет в приложение Telegram или по SMS (если указан force_sms=true).
+    """
+    try:
+        result = await client_manager.send_code(request.phone, force_sms=request.force_sms)
+        return LoginResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке кода: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post("/auth/verify", response_model=VerifyResponse, status_code=status.HTTP_200_OK)
+async def verify(request: VerifyRequest):
+    """
+    Подтверждает код авторизации.
+    
+    Если требуется пароль двухфакторной аутентификации, вернется password_required=true.
+    В этом случае используйте /auth/password для завершения авторизации.
+    """
+    try:
+        result = await client_manager.sign_in(request.phone, request.code)
+        return VerifyResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при подтверждении кода: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post("/auth/password", response_model=PasswordResponse, status_code=status.HTTP_200_OK)
+async def password(request: PasswordRequest):
+    """
+    Вводит пароль двухфакторной аутентификации.
+    
+    Используйте этот endpoint только после того, как /auth/verify вернул password_required=true.
+    """
+    try:
+        result = await client_manager.sign_in_password(request.password)
+        return PasswordResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при вводе пароля: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get("/chats", response_model=ChatsResponse, status_code=status.HTTP_200_OK)
+async def get_chats(limit: int = 100):
+    """
+    Получает список всех диалогов (чатов).
+    
+    Включает личные чаты, группы, супергруппы и каналы.
+    
+    Args:
+        limit: Максимальное количество чатов (по умолчанию 100)
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+    
+    try:
+        dialogs = await client_manager.get_dialogs(limit=limit)
+        chats = [ChatInfo(**dialog) for dialog in dialogs]
+        
+        return ChatsResponse(
+            success=True,
+            chats=chats,
+            total=len(chats)
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка чатов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post("/auth/qr/generate", response_model=QRCodeGenerateResponse, status_code=status.HTTP_200_OK)
+async def generate_qr_code():
+    """
+    Генерирует QR-код для авторизации через сканирование.
+    
+    Отсканируйте QR-код в Telegram приложении (Настройки -> Устройства -> Сканировать QR-код).
+    После сканирования используйте /auth/qr/status для проверки статуса авторизации.
+    """
+    try:
+        result = await client_manager.generate_qr_code()
+        return QRCodeGenerateResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при генерации QR-кода: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get("/auth/qr/status", response_model=QRCodeStatusResponse, status_code=status.HTTP_200_OK)
+async def check_qr_status():
+    """
+    Проверяет статус QR-кода авторизации.
+    
+    Вызывайте этот endpoint периодически после генерации QR-кода,
+    чтобы узнать, был ли он отсканирован и авторизация завершена.
+    """
+    try:
+        result = await client_manager.check_qr_status()
+        return QRCodeStatusResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при проверке статуса QR-кода: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get("/auth/qr/image")
+async def get_qr_code_image():
+    """
+    Генерирует и возвращает изображение QR-кода для авторизации.
+    
+    Сначала вызовите /auth/qr/generate, затем этот endpoint для получения изображения.
+    Или просто вызовите этот endpoint - он автоматически сгенерирует QR-код.
+    """
+    try:
+        # Генерируем QR-код (если уже есть, метод вернет существующий или создаст новый)
+        qr_data = await client_manager.generate_qr_code()
+        qr_url = qr_data.get("qr_url")
+        
+        if not qr_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Не удалось получить QR-код URL"
+            )
+        
+        # Создаем QR-код изображение
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(qr_url)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Конвертируем в bytes
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0)
+        
+        return Response(content=img_byte_arr.getvalue(), media_type="image/png")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при генерации изображения QR-кода: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post("/messages/send", response_model=SendMessageResponse, status_code=status.HTTP_200_OK)
+async def send_message(request: SendMessageRequest):
+    """
+    Отправляет сообщение в чат.
+    
+    chat_identifier может быть:
+    - Username чата (например, @username)
+    - ID чата (число)
+    
+    message - текст сообщения (до 4096 символов).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+    
+    try:
+        result = await client_manager.send_message(
+            request.chat_identifier,
+            request.message
+        )
+        return SendMessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке сообщения: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    """Глобальный обработчик исключений"""
+    logger.error(f"Необработанное исключение: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "success": False,
+            "error": "Внутренняя ошибка сервера",
+            "detail": str(exc)
+        }
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
