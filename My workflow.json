@@ -1,0 +1,263 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -464,
+        -48
+      ],
+      "id": "d672bb3b-74b6-492a-8c48-a9b2177ead54",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "url": "http://tg_api:8000/messages",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "chat_identifier",
+              "value": "={{ $json.chat_identifier }}"
+            },
+            {
+              "name": "limit",
+              "value": "={{ $json.limit }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -160,
+        -48
+      ],
+      "id": "e3766a5f-dea6-4e91-ba0f-623b8343a934",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f70782ee-22d7-4fd4-b700-6a06838f3e93",
+              "name": "chat_identifier",
+              "value": "SharksBz",
+              "type": "string"
+            },
+            {
+              "id": "ea8acbfc-98fc-4b5a-bba2-6b2a66060eb1",
+              "name": "limit",
+              "value": 10,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -304,
+        -48
+      ],
+      "id": "9cf0ffef-4d7f-4d59-90fd-d41b63d671f6",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "messages",
+          "mode": "list",
+          "cachedResultName": "messages"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "is_out": "={{ $json.messages[0].is_out }}",
+            "has_media": "={{ $json.messages[0].has_media }}",
+            "id": "={{ $json.messages[0].id }}",
+            "chat_id": "={{ $json.messages[0].chat_id }}",
+            "sender_id": "={{ $json.messages[0].sender_id }}",
+            "media_id": "={{ $json.messages[0].media_id }}",
+            "text": "={{ $json.messages[0].text }}",
+            "date": "={{ $json.messages[0].date }}",
+            "media_type": "={{ $json.messages[0].media_type }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": true,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sender_id",
+              "displayName": "sender_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "text",
+              "displayName": "text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "date",
+              "displayName": "date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "is_out",
+              "displayName": "is_out",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "has_media",
+              "displayName": "has_media",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "media_type",
+              "displayName": "media_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "media_id",
+              "displayName": "media_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        -48
+      ],
+      "id": "60dc0d07-b4d1-4ac2-9dcc-5ea09d707545",
+      "name": "Insert rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "p7pcPXCJOD1mkgUr",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Insert rows in a table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "2f764719-97fd-4755-8a5b-beab9f275221",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f3fce1aa528d3ff18b71ee2ae00f55215cc5ca85014db0265215f1034ccf8fe1"
+  },
+  "id": "1aYBg0RvK6KNpmG0",
+  "tags": []
+}
