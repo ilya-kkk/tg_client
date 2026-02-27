@@ -313,6 +313,43 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def delete_messages(
+        self, chat_identifier: str, message_ids: List[int], revoke: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Удаляет одно или несколько сообщений в чате.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            message_ids: Список ID сообщений для удаления
+            revoke: True удаляет для всех (если доступно), False только у себя
+
+        Returns:
+            Результат удаления сообщений
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+            await self.client.delete_messages(entity, message_ids, revoke=revoke)
+
+            mode = "для всех" if revoke else "только у себя"
+            return {
+                "success": True,
+                "deleted_count": len(message_ids),
+                "message": f"Сообщения удалены ({mode})",
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат или сообщения не найдены: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_messages(self, chat_identifier: str, limit: int = 50) -> Dict[str, Any]:
         """

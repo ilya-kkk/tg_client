@@ -123,6 +123,38 @@ class EditMessageResponse(BaseModel):
     message: str
 
 
+class DeleteMessagesRequest(BaseModel):
+    """Запрос на удаление сообщений"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    message_ids: List[int] = Field(..., description="Список ID сообщений для удаления", min_length=1)
+    revoke: bool = Field(
+        True,
+        description="True: удалить для всех (если доступно), False: удалить только у себя",
+    )
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Идентификатор чата не может быть пустым")
+        return v
+
+    @field_validator("message_ids")
+    @classmethod
+    def validate_message_ids(cls, v: List[int]) -> List[int]:
+        if any(message_id <= 0 for message_id in v):
+            raise ValueError("Все ID сообщений должны быть положительными")
+        return v
+
+
+class DeleteMessagesResponse(BaseModel):
+    """Ответ на удаление сообщений"""
+    success: bool
+    deleted_count: int
+    message: str
+
+
 class ErrorResponse(BaseModel):
     """Ответ об ошибке"""
     success: bool = False
