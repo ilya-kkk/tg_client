@@ -1289,6 +1289,43 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def publish_channel_post(self, channel_identifier: str, message: str) -> Dict[str, Any]:
+        """
+        Публикует пост в канал.
+
+        Args:
+            channel_identifier: Username канала (@channel) или ID канала
+            message: Текст поста
+
+        Returns:
+            Результат публикации поста
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(channel_identifier)
+            if not isinstance(entity, Channel):
+                raise ValueError("Указанный идентификатор не является каналом")
+
+            sent_message = await self.client.send_message(entity, message)
+            return {
+                "success": True,
+                "channel_id": entity.id,
+                "message_id": sent_message.id,
+                "date": sent_message.date.isoformat() if sent_message.date else None,
+                "message": "Пост опубликован",
+            }
+        except ValueError as e:
+            raise ValueError(f"Канал не найден или публикация недоступна: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """

@@ -47,6 +47,7 @@ from app.models import (
     ManageContactRequest,
     ManageBlockRequest,
     SubscribeChannelRequest,
+    PublishChannelPostRequest,
     MessagesResponse,
     UserInfoResponse,
     ContactsResponse,
@@ -55,6 +56,7 @@ from app.models import (
     ManageBlockResponse,
     SubscribeChannelResponse,
     UnsubscribeChannelResponse,
+    PublishChannelPostResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -670,6 +672,41 @@ async def get_channel_posts(channel_identifier: str, limit: int = 50):
         )
     except Exception as e:
         logger.error(f"Ошибка при получении постов канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/channels/posts/publish",
+    response_model=PublishChannelPostResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def publish_channel_post(request: PublishChannelPostRequest):
+    """
+    Публикует пост в канал.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.publish_channel_post(
+            request.channel_identifier,
+            request.message,
+        )
+        return PublishChannelPostResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при публикации поста в канал: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",
