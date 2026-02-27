@@ -23,6 +23,8 @@ from app.models import (
     ReplyMessageResponse,
     SearchMessagesRequest,
     SearchMessagesResponse,
+    MarkMessagesReadRequest,
+    MarkMessagesReadResponse,
     ErrorResponse,
     ChatInfo,
     QRCodeGenerateResponse,
@@ -664,6 +666,41 @@ async def search_messages(request: SearchMessagesRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при поиске сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/messages/read",
+    response_model=MarkMessagesReadResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def mark_messages_read(request: MarkMessagesReadRequest):
+    """
+    Отмечает сообщения в чате как прочитанные.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+
+    try:
+        result = await client_manager.mark_messages_read(
+            request.chat_identifier,
+            request.max_id,
+        )
+        return MarkMessagesReadResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отметке сообщений как прочитанных: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",

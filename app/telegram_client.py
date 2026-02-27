@@ -682,6 +682,43 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def mark_messages_read(
+        self, chat_identifier: str, max_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Отмечает сообщения в чате как прочитанные.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            max_id: Максимальный ID сообщения для read ack (опционально)
+
+        Returns:
+            Результат выполнения отметки как прочитанных
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+            await self.client.send_read_acknowledge(entity, max_id=max_id)
+
+            chat_id = getattr(entity, "id", None)
+            return {
+                "success": True,
+                "chat_id": chat_id,
+                "max_id": max_id,
+                "message": "Сообщения отмечены как прочитанные",
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def download_media(self, chat_identifier: str, message_id: int) -> Dict[str, Any]:
         """
         Скачивает медиа по ID сообщения в чате.

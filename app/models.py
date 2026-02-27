@@ -225,6 +225,24 @@ class SearchMessagesRequest(BaseModel):
         return v
 
 
+class MarkMessagesReadRequest(BaseModel):
+    """Запрос на отметку сообщений как прочитанных"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    max_id: Optional[int] = Field(
+        None,
+        description="Максимальный ID сообщения для отметки как прочитанное. Если не указан, отмечаются все непрочитанные.",
+        gt=0,
+    )
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Идентификатор чата не может быть пустым")
+        return v
+
+
 class ErrorResponse(BaseModel):
     """Ответ об ошибке"""
     success: bool = False
@@ -306,3 +324,11 @@ class SearchMessagesResponse(BaseModel):
     query: str
     messages: List[MessageInfo]
     total: int
+
+
+class MarkMessagesReadResponse(BaseModel):
+    """Ответ на отметку сообщений как прочитанных"""
+    success: bool
+    chat_id: Optional[int] = None
+    max_id: Optional[int] = None
+    message: str
