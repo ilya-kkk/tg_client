@@ -21,6 +21,8 @@ from app.models import (
     ForwardMessagesResponse,
     ReplyMessageRequest,
     ReplyMessageResponse,
+    SearchMessagesRequest,
+    SearchMessagesResponse,
     ErrorResponse,
     ChatInfo,
     QRCodeGenerateResponse,
@@ -621,6 +623,50 @@ async def reply_message(request: ReplyMessageRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/search",
+    response_model=SearchMessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def search_messages(request: SearchMessagesRequest):
+    """
+    Ищет сообщения в указанном чате по текстовому запросу.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+
+    try:
+        result = await client_manager.search_messages(
+            request.chat_identifier,
+            request.query,
+            request.limit,
+        )
+        messages = [MessageInfo(**m) for m in result["messages"]]
+        return SearchMessagesResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            query=result["query"],
+            messages=messages,
+            total=len(messages),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при поиске сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
         )
 
 

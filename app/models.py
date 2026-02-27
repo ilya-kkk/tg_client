@@ -210,6 +210,21 @@ class ReplyMessageResponse(BaseModel):
     message: str
 
 
+class SearchMessagesRequest(BaseModel):
+    """Запрос на поиск сообщений в чате"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    query: str = Field(..., description="Поисковый запрос", min_length=1, max_length=256)
+    limit: int = Field(50, description="Максимальное количество найденных сообщений", ge=1, le=200)
+
+    @field_validator("chat_identifier", "query")
+    @classmethod
+    def validate_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Поле не может быть пустым")
+        return v
+
+
 class ErrorResponse(BaseModel):
     """Ответ об ошибке"""
     success: bool = False
@@ -279,5 +294,15 @@ class MessagesResponse(BaseModel):
     success: bool
     chat_id: int
     chat_name: Optional[str] = None
+    messages: List[MessageInfo]
+    total: int
+
+
+class SearchMessagesResponse(BaseModel):
+    """Ответ с результатами поиска сообщений"""
+    success: bool
+    chat_id: int
+    chat_name: Optional[str] = None
+    query: str
     messages: List[MessageInfo]
     total: int

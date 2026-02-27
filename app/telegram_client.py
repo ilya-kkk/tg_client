@@ -575,6 +575,113 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def search_messages(
+        self, chat_identifier: str, query: str, limit: int = 50
+    ) -> Dict[str, Any]:
+        """
+        Ищет сообщения в указанном чате по текстовому запросу.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            query: Поисковая строка
+            limit: Максимальное количество найденных сообщений
+
+        Returns:
+            Словарь с информацией о чате и найденных сообщениях
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+
+            chat_id: Optional[int] = None
+            chat_name: Optional[str] = None
+            if isinstance(entity, User):
+                chat_id = entity.id
+                chat_name = (entity.first_name or "") or "User"
+                if entity.last_name:
+                    chat_name = f"{chat_name} {entity.last_name}".strip()
+            elif isinstance(entity, (Chat, Channel)):
+                chat_id = entity.id
+                chat_name = getattr(entity, "title", None) or "Chat"
+            else:
+                chat_id = getattr(entity, "id", None)
+
+            messages = await self.client.get_messages(entity, search=query, limit=limit)
+
+            result_messages: List[Dict[str, Any]] = []
+            for msg in messages:
+                sender_id: Optional[int] = None
+                if hasattr(msg, "sender_id") and msg.sender_id is not None:
+                    try:
+                        sender_id = int(msg.sender_id)
+                    except (TypeError, ValueError):
+                        sender_id = None
+
+                msg_chat_id: Optional[int] = chat_id
+                if hasattr(msg, "peer_id") and msg.peer_id is not None:
+                    peer = msg.peer_id
+                    if hasattr(peer, "channel_id"):
+                        msg_chat_id = peer.channel_id
+                    elif hasattr(peer, "chat_id"):
+                        msg_chat_id = peer.chat_id
+                    elif hasattr(peer, "user_id"):
+                        msg_chat_id = peer.user_id
+
+                has_media = bool(getattr(msg, "media", None))
+                media_type: Optional[str] = None
+                if has_media and msg.media is not None:
+                    if isinstance(msg.media, MessageMediaPhoto):
+                        media_type = "photo"
+                    elif isinstance(msg.media, MessageMediaDocument):
+                        doc = msg.media.document
+                        attrs = getattr(doc, "attributes", []) or []
+                        for attr in attrs:
+                            if isinstance(attr, DocumentAttributeVideo):
+                                media_type = "video"
+                                break
+                            if isinstance(attr, DocumentAttributeAudio):
+                                media_type = "voice" if getattr(attr, "voice", False) else "audio"
+                                break
+                            if isinstance(attr, DocumentAttributeSticker):
+                                media_type = "sticker"
+                                break
+                        if media_type is None:
+                            media_type = "document"
+                    else:
+                        media_type = "other"
+
+                result_messages.append(
+                    {
+                        "id": msg.id,
+                        "chat_id": msg_chat_id if msg_chat_id is not None else (chat_id or 0),
+                        "sender_id": sender_id,
+                        "text": msg.message or "",
+                        "date": msg.date.isoformat() if msg.date else "",
+                        "is_out": bool(getattr(msg, "out", False)),
+                        "has_media": has_media,
+                        "media_type": media_type,
+                        "media_id": msg.id if has_media else None,
+                    }
+                )
+
+            return {
+                "chat_id": chat_id if chat_id is not None else 0,
+                "chat_name": chat_name,
+                "query": query,
+                "messages": result_messages,
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат не найден или ошибка поиска: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def download_media(self, chat_identifier: str, message_id: int) -> Dict[str, Any]:
         """
         Скачивает медиа по ID сообщения в чате.
