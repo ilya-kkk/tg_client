@@ -521,6 +521,19 @@ class UpdateNameRequest(BaseModel):
         return value or None
 
 
+class UpdateAboutRequest(BaseModel):
+    """Запрос на изменение биографии (about)"""
+    about: str = Field(..., description="Новая биография", min_length=1, max_length=70)
+
+    @field_validator("about")
+    @classmethod
+    def validate_about(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("about не может быть пустым")
+        return value
+
+
 class SubscribeChannelRequest(BaseModel):
     """Запрос на подписку на канал"""
     channel_identifier: str = Field(..., description="Username канала (@channel) или ID канала")
@@ -684,6 +697,13 @@ class UpdateNameResponse(BaseModel):
     success: bool
     first_name: str
     last_name: Optional[str] = None
+    message: str
+
+
+class UpdateAboutResponse(BaseModel):
+    """Ответ на изменение биографии"""
+    success: bool
+    about: str
     message: str
 
 

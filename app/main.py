@@ -49,6 +49,7 @@ from app.models import (
     ManageBlockRequest,
     UpdateUsernameRequest,
     UpdateNameRequest,
+    UpdateAboutRequest,
     SubscribeChannelRequest,
     PublishChannelPostRequest,
     EditChannelPostRequest,
@@ -58,6 +59,7 @@ from app.models import (
     AccountInfoResponse,
     UpdateUsernameResponse,
     UpdateNameResponse,
+    UpdateAboutResponse,
     ContactsResponse,
     UserStatusResponse,
     ManageContactResponse,
@@ -685,6 +687,38 @@ async def update_account_name(request: UpdateNameRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при изменении имени/фамилии: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/account/about",
+    response_model=UpdateAboutResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def update_account_about(request: UpdateAboutRequest):
+    """
+    Изменяет биографию (about) текущего аккаунта.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_about(request.about)
+        return UpdateAboutResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении биографии: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
