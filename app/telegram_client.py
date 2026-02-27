@@ -401,6 +401,58 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def reply_message(
+        self, chat_identifier: str, reply_to_message_id: int, message: str
+    ) -> Dict[str, Any]:
+        """
+        Отправляет ответ на конкретное сообщение в чате.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            reply_to_message_id: ID сообщения, на которое отвечаем
+            message: Текст ответа
+
+        Returns:
+            Информация об отправленном reply-сообщении
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            sent_message = await self.client.send_message(
+                chat_identifier,
+                message,
+                reply_to=reply_to_message_id,
+            )
+
+            chat_id: Optional[int] = None
+            peer = getattr(sent_message, "peer_id", None)
+            if peer is not None:
+                if hasattr(peer, "channel_id"):
+                    chat_id = peer.channel_id
+                elif hasattr(peer, "chat_id"):
+                    chat_id = peer.chat_id
+                elif hasattr(peer, "user_id"):
+                    chat_id = peer.user_id
+
+            return {
+                "success": True,
+                "message_id": sent_message.id,
+                "chat_id": chat_id,
+                "date": sent_message.date.isoformat() if sent_message.date else None,
+                "reply_to_message_id": reply_to_message_id,
+                "message": "Ответ отправлен",
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат или исходное сообщение не найдены: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_messages(self, chat_identifier: str, limit: int = 50) -> Dict[str, Any]:
         """

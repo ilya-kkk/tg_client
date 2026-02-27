@@ -185,6 +185,31 @@ class ForwardMessagesResponse(BaseModel):
     message: str
 
 
+class ReplyMessageRequest(BaseModel):
+    """Запрос на ответ на сообщение"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    reply_to_message_id: int = Field(..., description="ID сообщения, на которое отвечаем", gt=0)
+    message: str = Field(..., description="Текст ответа", min_length=1, max_length=4096)
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Идентификатор чата не может быть пустым")
+        return v
+
+
+class ReplyMessageResponse(BaseModel):
+    """Ответ на отправку reply-сообщения"""
+    success: bool
+    message_id: Optional[int] = None
+    chat_id: Optional[int] = None
+    date: Optional[str] = None
+    reply_to_message_id: int
+    message: str
+
+
 class ErrorResponse(BaseModel):
     """Ответ об ошибке"""
     success: bool = False

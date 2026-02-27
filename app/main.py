@@ -19,6 +19,8 @@ from app.models import (
     DeleteMessagesResponse,
     ForwardMessagesRequest,
     ForwardMessagesResponse,
+    ReplyMessageRequest,
+    ReplyMessageResponse,
     ErrorResponse,
     ChatInfo,
     QRCodeGenerateResponse,
@@ -580,6 +582,42 @@ async def forward_messages(request: ForwardMessagesRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при пересылке сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/reply",
+    response_model=ReplyMessageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def reply_message(request: ReplyMessageRequest):
+    """
+    Отправляет сообщение-ответ на конкретное сообщение в чате.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.reply_message(
+            request.chat_identifier,
+            request.reply_to_message_id,
+            request.message,
+        )
+        return ReplyMessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке ответа на сообщение: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
