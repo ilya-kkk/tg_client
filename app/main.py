@@ -41,7 +41,9 @@ from app.models import (
     FoldersResponse,
     FolderInfo,
     MessageInfo,
+    UserInfo,
     MessagesResponse,
+    UserInfoResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -67,6 +69,10 @@ tags_metadata = [
     {
         "name": "messages",
         "description": "Отправка и получение сообщений",
+    },
+    {
+        "name": "users",
+        "description": "Работа с данными пользователей",
     },
 ]
 
@@ -366,6 +372,41 @@ async def archive_chat(request: ArchiveChatRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при архивировании чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/users/info",
+    response_model=UserInfoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def get_user_info(user_identifier: str):
+    """
+    Получает информацию о пользователе Telegram по username, ID или телефону.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        user_data = await client_manager.get_user_info(user_identifier)
+        return UserInfoResponse(
+            success=True,
+            user=UserInfo(**user_data),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о пользователе: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

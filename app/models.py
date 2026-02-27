@@ -392,6 +392,21 @@ class MessageInfo(BaseModel):
     media_id: Optional[int] = None  # ID сообщения, по которому можно скачать медиа
 
 
+class UserInfo(BaseModel):
+    """Информация о пользователе"""
+    id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+    is_bot: bool = False
+    is_verified: bool = False
+    is_scam: bool = False
+    is_fake: bool = False
+    is_premium: bool = False
+    status: Optional[str] = None
+
+
 class MessagesResponse(BaseModel):
     """Ответ со списком сообщений чата"""
     success: bool
@@ -453,3 +468,9 @@ class FilterMessagesResponse(BaseModel):
     message_type: str
     messages: List[MessageInfo]
     total: int
+
+
+class UserInfoResponse(BaseModel):
+    """Ответ с информацией о пользователе"""
+    success: bool
+    user: UserInfo

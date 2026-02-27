@@ -971,6 +971,52 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def get_user_info(self, user_identifier: str) -> Dict[str, Any]:
+        """
+        Получает информацию о пользователе Telegram.
+
+        Args:
+            user_identifier: Username пользователя (@username), phone или user ID
+
+        Returns:
+            Словарь с полями пользователя
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(user_identifier)
+            if not isinstance(entity, User):
+                raise ValueError("Указанный идентификатор не принадлежит пользователю")
+
+            status = getattr(entity, "status", None)
+            status_value: Optional[str] = None
+            if status is not None:
+                status_value = status.__class__.__name__.replace("UserStatus", "").lower()
+
+            return {
+                "id": entity.id,
+                "username": entity.username,
+                "first_name": entity.first_name,
+                "last_name": entity.last_name,
+                "phone": entity.phone,
+                "is_bot": bool(getattr(entity, "bot", False)),
+                "is_verified": bool(getattr(entity, "verified", False)),
+                "is_scam": bool(getattr(entity, "scam", False)),
+                "is_fake": bool(getattr(entity, "fake", False)),
+                "is_premium": bool(getattr(entity, "premium", False)),
+                "status": status_value,
+            }
+        except ValueError as e:
+            raise ValueError(f"Пользователь не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
