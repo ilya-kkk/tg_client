@@ -23,6 +23,8 @@ from app.models import (
     ReplyMessageResponse,
     SearchMessagesRequest,
     SearchMessagesResponse,
+    FilterMessagesRequest,
+    FilterMessagesResponse,
     MarkMessagesReadRequest,
     MarkMessagesReadResponse,
     PinMessageRequest,
@@ -707,6 +709,50 @@ async def search_messages(request: SearchMessagesRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при поиске сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/messages/filter",
+    response_model=FilterMessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def filter_messages(request: FilterMessagesRequest):
+    """
+    Фильтрует сообщения в чате по типу (text/media/photo/video/document/audio/voice/sticker/service).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+
+    try:
+        result = await client_manager.filter_messages(
+            request.chat_identifier,
+            request.message_type,
+            request.limit,
+        )
+        messages = [MessageInfo(**m) for m in result["messages"]]
+        return FilterMessagesResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            message_type=result["message_type"],
+            messages=messages,
+            total=len(messages),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при фильтрации сообщений: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",

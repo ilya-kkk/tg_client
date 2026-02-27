@@ -287,6 +287,33 @@ class MessageReactionRequest(BaseModel):
         return v or None
 
 
+class FilterMessagesRequest(BaseModel):
+    """Запрос на фильтрацию сообщений по типу"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    message_type: str = Field(
+        ...,
+        description="Тип сообщений: text, media, photo, video, document, audio, voice, sticker, gif, service",
+    )
+    limit: int = Field(100, description="Максимальное количество сообщений для анализа", ge=1, le=500)
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Идентификатор чата не может быть пустым")
+        return v
+
+    @field_validator("message_type")
+    @classmethod
+    def validate_message_type(cls, v: str) -> str:
+        allowed = {"text", "media", "photo", "video", "document", "audio", "voice", "sticker", "gif", "service"}
+        value = v.strip().lower()
+        if value not in allowed:
+            raise ValueError(f"Неподдерживаемый тип сообщения. Доступно: {', '.join(sorted(allowed))}")
+        return value
+
+
 class ErrorResponse(BaseModel):
     """Ответ об ошибке"""
     success: bool = False
@@ -416,3 +443,13 @@ class ArchiveChatResponse(BaseModel):
     chat_id: Optional[int] = None
     archived: bool
     message: str
+
+
+class FilterMessagesResponse(BaseModel):
+    """Ответ с отфильтрованными сообщениями"""
+    success: bool
+    chat_id: int
+    chat_name: Optional[str] = None
+    message_type: str
+    messages: List[MessageInfo]
+    total: int

@@ -682,6 +682,60 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def filter_messages(
+        self, chat_identifier: str, message_type: str, limit: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Фильтрует сообщения по типу в указанном чате.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            message_type: Тип сообщений (text, media, photo, video, document, audio, voice, sticker, gif, service)
+            limit: Максимальное количество сообщений для анализа
+
+        Returns:
+            Словарь с информацией о чате и отфильтрованными сообщениями
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            base_result = await self.get_messages(chat_identifier, limit=limit)
+            messages = base_result["messages"]
+
+            def is_match(msg: Dict[str, Any]) -> bool:
+                has_media = bool(msg.get("has_media", False))
+                media_type = (msg.get("media_type") or "").lower()
+                text = (msg.get("text") or "").strip()
+
+                if message_type == "text":
+                    return (not has_media) and bool(text)
+                if message_type == "media":
+                    return has_media
+                if message_type == "service":
+                    return (not has_media) and (not text)
+                if message_type == "gif":
+                    return media_type == "gif"
+                return media_type == message_type
+
+            filtered_messages = [msg for msg in messages if is_match(msg)]
+
+            return {
+                "chat_id": base_result["chat_id"],
+                "chat_name": base_result.get("chat_name"),
+                "message_type": message_type,
+                "messages": filtered_messages,
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка фильтрации сообщений: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def mark_messages_read(
         self, chat_identifier: str, max_id: Optional[int] = None
     ) -> Dict[str, Any]:
