@@ -407,6 +407,18 @@ class UserInfo(BaseModel):
     status: Optional[str] = None
 
 
+class ContactInfo(BaseModel):
+    """Информация о контакте"""
+    id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+    is_bot: bool = False
+    is_verified: bool = False
+    is_premium: bool = False
+
+
 class MessagesResponse(BaseModel):
     """Ответ со списком сообщений чата"""
     success: bool
@@ -474,3 +486,10 @@ class UserInfoResponse(BaseModel):
     """Ответ с информацией о пользователе"""
     success: bool
     user: UserInfo
+
+
+class ContactsResponse(BaseModel):
+    """Ответ со списком контактов"""
+    success: bool
+    contacts: List[ContactInfo]
+    total: int

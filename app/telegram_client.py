@@ -1017,6 +1017,46 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def get_contacts(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Получает список контактов текущего аккаунта.
+
+        Args:
+            limit: Максимальное количество контактов
+
+        Returns:
+            Список словарей с информацией о контактах
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            users = await self.client.get_contacts()
+            contacts: List[Dict[str, Any]] = []
+
+            for user in users[:limit]:
+                contacts.append(
+                    {
+                        "id": user.id,
+                        "username": user.username,
+                        "first_name": user.first_name,
+                        "last_name": user.last_name,
+                        "phone": user.phone,
+                        "is_bot": bool(getattr(user, "bot", False)),
+                        "is_verified": bool(getattr(user, "verified", False)),
+                        "is_premium": bool(getattr(user, "premium", False)),
+                    }
+                )
+
+            return contacts
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
