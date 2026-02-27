@@ -480,6 +480,19 @@ class ManageBlockRequest(BaseModel):
         return value
 
 
+class SubscribeChannelRequest(BaseModel):
+    """Запрос на подписку на канал"""
+    channel_identifier: str = Field(..., description="Username канала (@channel) или ID канала")
+
+    @field_validator("channel_identifier")
+    @classmethod
+    def validate_channel_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("channel_identifier не может быть пустым")
+        return value
+
+
 class MessagesResponse(BaseModel):
     """Ответ со списком сообщений чата"""
     success: bool
@@ -574,4 +587,11 @@ class ManageBlockResponse(BaseModel):
     success: bool
     action: str
     user_id: Optional[int] = None
+    message: str
+
+
+class SubscribeChannelResponse(BaseModel):
+    """Ответ на подписку на канал"""
+    success: bool
+    channel_id: Optional[int] = None
     message: str

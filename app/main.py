@@ -46,12 +46,14 @@ from app.models import (
     UserStatusInfo,
     ManageContactRequest,
     ManageBlockRequest,
+    SubscribeChannelRequest,
     MessagesResponse,
     UserInfoResponse,
     ContactsResponse,
     UserStatusResponse,
     ManageContactResponse,
     ManageBlockResponse,
+    SubscribeChannelResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -81,6 +83,10 @@ tags_metadata = [
     {
         "name": "users",
         "description": "Работа с данными пользователей",
+    },
+    {
+        "name": "channels",
+        "description": "Работа с каналами",
     },
 ]
 
@@ -560,6 +566,38 @@ async def get_user_status(user_identifier: str):
         )
     except Exception as e:
         logger.error(f"Ошибка при получении статуса пользователя: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/channels/subscribe",
+    response_model=SubscribeChannelResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def subscribe_channel(request: SubscribeChannelRequest):
+    """
+    Подписывает текущий аккаунт на канал.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.subscribe_channel(request.channel_identifier)
+        return SubscribeChannelResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при подписке на канал: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
