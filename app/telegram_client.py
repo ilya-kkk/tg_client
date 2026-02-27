@@ -1326,6 +1326,46 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def edit_channel_post(
+        self, channel_identifier: str, message_id: int, message: str
+    ) -> Dict[str, Any]:
+        """
+        Редактирует пост в канале.
+
+        Args:
+            channel_identifier: Username канала (@channel) или ID канала
+            message_id: ID поста
+            message: Новый текст поста
+
+        Returns:
+            Результат редактирования поста
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(channel_identifier)
+            if not isinstance(entity, Channel):
+                raise ValueError("Указанный идентификатор не является каналом")
+
+            edited = await self.client.edit_message(entity, message_id, message)
+            return {
+                "success": True,
+                "channel_id": entity.id,
+                "message_id": edited.id,
+                "date": edited.date.isoformat() if edited.date else None,
+                "message": "Пост отредактирован",
+            }
+        except ValueError as e:
+            raise ValueError(f"Канал или пост не найдены: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """

@@ -507,6 +507,21 @@ class PublishChannelPostRequest(BaseModel):
         return value
 
 
+class EditChannelPostRequest(BaseModel):
+    """Запрос на редактирование поста в канале"""
+    channel_identifier: str = Field(..., description="Username канала (@channel) или ID канала")
+    message_id: int = Field(..., description="ID поста", gt=0)
+    message: str = Field(..., description="Новый текст поста", min_length=1, max_length=4096)
+
+    @field_validator("channel_identifier")
+    @classmethod
+    def validate_channel_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("channel_identifier не может быть пустым")
+        return value
+
+
 class MessagesResponse(BaseModel):
     """Ответ со списком сообщений чата"""
     success: bool
@@ -620,6 +635,15 @@ class UnsubscribeChannelResponse(BaseModel):
 
 class PublishChannelPostResponse(BaseModel):
     """Ответ на публикацию поста"""
+    success: bool
+    channel_id: Optional[int] = None
+    message_id: Optional[int] = None
+    date: Optional[str] = None
+    message: str
+
+
+class EditChannelPostResponse(BaseModel):
+    """Ответ на редактирование поста"""
     success: bool
     channel_id: Optional[int] = None
     message_id: Optional[int] = None

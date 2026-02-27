@@ -48,6 +48,7 @@ from app.models import (
     ManageBlockRequest,
     SubscribeChannelRequest,
     PublishChannelPostRequest,
+    EditChannelPostRequest,
     MessagesResponse,
     UserInfoResponse,
     ContactsResponse,
@@ -57,6 +58,7 @@ from app.models import (
     SubscribeChannelResponse,
     UnsubscribeChannelResponse,
     PublishChannelPostResponse,
+    EditChannelPostResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -707,6 +709,42 @@ async def publish_channel_post(request: PublishChannelPostRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при публикации поста в канал: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.patch(
+    "/channels/posts/edit",
+    response_model=EditChannelPostResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def edit_channel_post(request: EditChannelPostRequest):
+    """
+    Редактирует пост в канале.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.edit_channel_post(
+            request.channel_identifier,
+            request.message_id,
+            request.message,
+        )
+        return EditChannelPostResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании поста канала: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",
