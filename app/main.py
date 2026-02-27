@@ -54,6 +54,7 @@ from app.models import (
     ManageContactResponse,
     ManageBlockResponse,
     SubscribeChannelResponse,
+    UnsubscribeChannelResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -598,6 +599,38 @@ async def subscribe_channel(request: SubscribeChannelRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при подписке на канал: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/channels/unsubscribe",
+    response_model=UnsubscribeChannelResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def unsubscribe_channel(request: SubscribeChannelRequest):
+    """
+    Отписывает текущий аккаунт от канала.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.unsubscribe_channel(request.channel_identifier)
+        return UnsubscribeChannelResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отписке от канала: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

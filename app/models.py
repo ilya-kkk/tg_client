@@ -595,3 +595,10 @@ class SubscribeChannelResponse(BaseModel):
     success: bool
     channel_id: Optional[int] = None
     message: str
+
+
+class UnsubscribeChannelResponse(BaseModel):
+    """Ответ на отписку от канала"""
+    success: bool
+    channel_id: Optional[int] = None
+    message: str
