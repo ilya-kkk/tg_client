@@ -1105,6 +1105,80 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def manage_contact(
+        self,
+        action: str,
+        user_identifier: Optional[str] = None,
+        phone: Optional[str] = None,
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Добавляет или удаляет контакт.
+
+        Args:
+            action: add/remove
+            user_identifier: username/id/phone для работы с контактом
+            phone: номер телефона для добавления по телефону
+            first_name: имя контакта при добавлении
+            last_name: фамилия контакта при добавлении
+
+        Returns:
+            Результат операции
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        action = action.lower()
+        if action not in {"add", "remove"}:
+            raise ValueError("action должен быть 'add' или 'remove'")
+
+        try:
+            if action == "add":
+                if phone:
+                    contact = types.InputPhoneContact(
+                        client_id=int(time.time() * 1000),
+                        phone=phone,
+                        first_name=first_name or "Contact",
+                        last_name=last_name or "",
+                    )
+                    await self.client(functions.contacts.ImportContactsRequest([contact]))
+                elif user_identifier:
+                    await self.client.add_contact(
+                        user_identifier,
+                        first_name=first_name or "Contact",
+                        last_name=last_name or "",
+                        phone=phone or "",
+                    )
+                else:
+                    raise ValueError("Для add нужно передать phone или user_identifier")
+
+                return {
+                    "success": True,
+                    "action": "add",
+                    "message": "Контакт добавлен",
+                }
+
+            if not user_identifier:
+                raise ValueError("Для remove нужно передать user_identifier")
+
+            entity = await self.client.get_entity(user_identifier)
+            await self.client.delete_contacts(entity)
+            return {
+                "success": True,
+                "action": "remove",
+                "message": "Контакт удален",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка операции с контактом: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """

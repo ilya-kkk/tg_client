@@ -44,10 +44,12 @@ from app.models import (
     UserInfo,
     ContactInfo,
     UserStatusInfo,
+    ManageContactRequest,
     MessagesResponse,
     UserInfoResponse,
     ContactsResponse,
     UserStatusResponse,
+    ManageContactResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -448,6 +450,44 @@ async def get_contacts(limit: int = 200):
         )
     except Exception as e:
         logger.error(f"Ошибка при получении списка контактов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/users/contacts/manage",
+    response_model=ManageContactResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def manage_contact(request: ManageContactRequest):
+    """
+    Добавляет или удаляет контакт.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.manage_contact(
+            action=request.action,
+            user_identifier=request.user_identifier,
+            phone=request.phone,
+            first_name=request.first_name,
+            last_name=request.last_name,
+        )
+        return ManageContactResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении контакта: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

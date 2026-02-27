@@ -427,6 +427,37 @@ class UserStatusInfo(BaseModel):
     expires: Optional[str] = None
 
 
+class ManageContactRequest(BaseModel):
+    """Запрос на добавление или удаление контакта"""
+    action: str = Field(..., description="Действие: add или remove")
+    user_identifier: Optional[str] = Field(
+        None,
+        description="Username/ID/phone пользователя. Для remove обязательно.",
+    )
+    phone: Optional[str] = Field(
+        None,
+        description="Телефон для добавления контакта (если добавляем по номеру).",
+    )
+    first_name: Optional[str] = Field(None, description="Имя контакта для добавления")
+    last_name: Optional[str] = Field(None, description="Фамилия контакта для добавления")
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, v: str) -> str:
+        value = v.strip().lower()
+        if value not in {"add", "remove"}:
+            raise ValueError("action должен быть 'add' или 'remove'")
+        return value
+
+    @field_validator("user_identifier", "phone", "first_name", "last_name")
+    @classmethod
+    def trim_optional(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
 class MessagesResponse(BaseModel):
     """Ответ со списком сообщений чата"""
     success: bool
@@ -507,3 +538,10 @@ class UserStatusResponse(BaseModel):
     """Ответ со статусом пользователя"""
     success: bool
     user_status: UserStatusInfo
+
+
+class ManageContactResponse(BaseModel):
+    """Ответ на добавление/удаление контакта"""
+    success: bool
+    action: str
+    message: str
