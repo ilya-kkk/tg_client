@@ -637,6 +637,45 @@ async def unsubscribe_channel(request: SubscribeChannelRequest):
         )
 
 
+@app.get(
+    "/channels/posts",
+    response_model=MessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def get_channel_posts(channel_identifier: str, limit: int = 50):
+    """
+    Получает последние посты из канала.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.get_messages(channel_identifier, limit=limit)
+        messages = [MessageInfo(**m) for m in result["messages"]]
+        return MessagesResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            messages=messages,
+            total=len(messages),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении постов канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
 @app.post(
     "/auth/qr/generate",
     response_model=QRCodeGenerateResponse,
