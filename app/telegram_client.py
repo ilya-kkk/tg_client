@@ -1137,6 +1137,30 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def update_username(self, username: str) -> Dict[str, Any]:
+        """
+        Изменяет username текущего аккаунта.
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            updated_user = await self.client(
+                functions.account.UpdateUsernameRequest(username=username)
+            )
+            return {
+                "success": True,
+                "username": updated_user.username or username,
+                "message": "Username обновлен",
+            }
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def manage_contact(
         self,

@@ -492,6 +492,21 @@ class ManageBlockRequest(BaseModel):
         return value
 
 
+class UpdateUsernameRequest(BaseModel):
+    """Запрос на изменение username текущего аккаунта"""
+    username: str = Field(..., description="Новый username (без @)", min_length=5, max_length=32)
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        value = v.strip()
+        if value.startswith("@"):
+            value = value[1:]
+        if not value:
+            raise ValueError("username не может быть пустым")
+        return value
+
+
 class SubscribeChannelRequest(BaseModel):
     """Запрос на подписку на канал"""
     channel_identifier: str = Field(..., description="Username канала (@channel) или ID канала")
@@ -641,6 +656,13 @@ class AccountInfoResponse(BaseModel):
     """Ответ с информацией о текущем аккаунте"""
     success: bool
     account: AccountInfo
+
+
+class UpdateUsernameResponse(BaseModel):
+    """Ответ на изменение username"""
+    success: bool
+    username: str
+    message: str
 
 
 class ManageContactResponse(BaseModel):

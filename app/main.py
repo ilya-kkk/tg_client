@@ -47,6 +47,7 @@ from app.models import (
     UserStatusInfo,
     ManageContactRequest,
     ManageBlockRequest,
+    UpdateUsernameRequest,
     SubscribeChannelRequest,
     PublishChannelPostRequest,
     EditChannelPostRequest,
@@ -54,6 +55,7 @@ from app.models import (
     MessagesResponse,
     UserInfoResponse,
     AccountInfoResponse,
+    UpdateUsernameResponse,
     ContactsResponse,
     UserStatusResponse,
     ManageContactResponse,
@@ -614,6 +616,38 @@ async def get_account_me():
         )
     except Exception as e:
         logger.error(f"Ошибка при получении информации о своем аккаунте: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/account/username",
+    response_model=UpdateUsernameResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def update_account_username(request: UpdateUsernameRequest):
+    """
+    Изменяет username текущего аккаунта.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_username(request.username)
+        return UpdateUsernameResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении username: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
