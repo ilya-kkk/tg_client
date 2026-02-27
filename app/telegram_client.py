@@ -1106,6 +1106,38 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def get_me_info(self) -> Dict[str, Any]:
+        """
+        Получает информацию о текущем авторизованном аккаунте.
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            me = await self.client.get_me()
+            if not me:
+                raise ValueError("Не удалось получить данные аккаунта")
+
+            return {
+                "id": me.id,
+                "username": me.username,
+                "first_name": me.first_name,
+                "last_name": me.last_name,
+                "phone": me.phone,
+                "is_bot": bool(getattr(me, "bot", False)),
+                "is_verified": bool(getattr(me, "verified", False)),
+                "is_premium": bool(getattr(me, "premium", False)),
+            }
+        except ValueError:
+            raise
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+    
     async def manage_contact(
         self,
         action: str,

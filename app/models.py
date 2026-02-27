@@ -407,6 +407,18 @@ class UserInfo(BaseModel):
     status: Optional[str] = None
 
 
+class AccountInfo(BaseModel):
+    """Информация о текущем аккаунте"""
+    id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+    is_bot: bool = False
+    is_verified: bool = False
+    is_premium: bool = False
+
+
 class ContactInfo(BaseModel):
     """Информация о контакте"""
     id: int
@@ -623,6 +635,12 @@ class UserStatusResponse(BaseModel):
     """Ответ со статусом пользователя"""
     success: bool
     user_status: UserStatusInfo
+
+
+class AccountInfoResponse(BaseModel):
+    """Ответ с информацией о текущем аккаунте"""
+    success: bool
+    account: AccountInfo
 
 
 class ManageContactResponse(BaseModel):

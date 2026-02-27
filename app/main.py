@@ -42,6 +42,7 @@ from app.models import (
     FolderInfo,
     MessageInfo,
     UserInfo,
+    AccountInfo,
     ContactInfo,
     UserStatusInfo,
     ManageContactRequest,
@@ -52,6 +53,7 @@ from app.models import (
     DeleteChannelPostsRequest,
     MessagesResponse,
     UserInfoResponse,
+    AccountInfoResponse,
     ContactsResponse,
     UserStatusResponse,
     ManageContactResponse,
@@ -94,6 +96,10 @@ tags_metadata = [
     {
         "name": "channels",
         "description": "Работа с каналами",
+    },
+    {
+        "name": "account",
+        "description": "Управление текущим аккаунтом",
     },
 ]
 
@@ -573,6 +579,41 @@ async def get_user_status(user_identifier: str):
         )
     except Exception as e:
         logger.error(f"Ошибка при получении статуса пользователя: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/account/me",
+    response_model=AccountInfoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def get_account_me():
+    """
+    Получает информацию о текущем авторизованном аккаунте.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        account_data = await client_manager.get_me_info()
+        return AccountInfoResponse(
+            success=True,
+            account=AccountInfo(**account_data),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о своем аккаунте: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
