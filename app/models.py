@@ -259,6 +259,34 @@ class PinMessageRequest(BaseModel):
         return v
 
 
+class MessageReactionRequest(BaseModel):
+    """Запрос на установку/снятие реакции на сообщение"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    message_id: int = Field(..., description="ID сообщения", gt=0)
+    reaction: Optional[str] = Field(
+        None,
+        description="Emoji реакции (например, 👍). Не указывайте для снятия реакции.",
+        max_length=16,
+    )
+    big: bool = Field(False, description="Большая анимация реакции, если поддерживается")
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Идентификатор чата не может быть пустым")
+        return v
+
+    @field_validator("reaction")
+    @classmethod
+    def validate_reaction(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        return v or None
+
+
 class ErrorResponse(BaseModel):
     """Ответ об ошибке"""
     success: bool = False
@@ -356,4 +384,13 @@ class PinMessageResponse(BaseModel):
     chat_id: Optional[int] = None
     message_id: int
     action: str
+    message: str
+
+
+class MessageReactionResponse(BaseModel):
+    """Ответ на установку/снятие реакции"""
+    success: bool
+    chat_id: Optional[int] = None
+    message_id: int
+    reaction: Optional[str] = None
     message: str

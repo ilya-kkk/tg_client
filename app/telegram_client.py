@@ -770,6 +770,54 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def set_message_reaction(
+        self,
+        chat_identifier: str,
+        message_id: int,
+        reaction: Optional[str] = None,
+        big: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Устанавливает или снимает реакцию на сообщение.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            message_id: ID сообщения
+            reaction: Emoji реакции. None для снятия реакции.
+            big: Большая анимация реакции, если поддерживается
+
+        Returns:
+            Результат установки/снятия реакции
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+            await self.client.send_reaction(
+                entity,
+                message_id,
+                reaction=reaction,
+                big=big,
+            )
+
+            return {
+                "success": True,
+                "chat_id": getattr(entity, "id", None),
+                "message_id": message_id,
+                "reaction": reaction,
+                "message": "Реакция снята" if reaction is None else "Реакция установлена",
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат или сообщение не найдены: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def download_media(self, chat_identifier: str, message_id: int) -> Dict[str, Any]:
         """
         Скачивает медиа по ID сообщения в чате.

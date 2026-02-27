@@ -28,7 +28,7 @@
 - [x] Удаление сообщений (для себя / для всех) (`/messages/delete`, `DELETE`)  
 - [x] Пересылка сообщений (`/messages/forward`, `POST`)  
 - [x] Ответ на сообщения (reply) (`/messages/reply`, `POST`)  
-- Реакции на сообщения  
+- [x] Реакции на сообщения (`/messages/reaction`, `POST`)  
 - [x] Поиск по сообщениям (`/messages/search`, `POST`)  
 - [x] Получение подробной информации о сообщении  
 
