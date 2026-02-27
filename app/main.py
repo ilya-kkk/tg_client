@@ -43,9 +43,11 @@ from app.models import (
     MessageInfo,
     UserInfo,
     ContactInfo,
+    UserStatusInfo,
     MessagesResponse,
     UserInfoResponse,
     ContactsResponse,
+    UserStatusResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -446,6 +448,41 @@ async def get_contacts(limit: int = 200):
         )
     except Exception as e:
         logger.error(f"Ошибка при получении списка контактов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/users/status",
+    response_model=UserStatusResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def get_user_status(user_identifier: str):
+    """
+    Получает текущий статус пользователя (онлайн/оффлайн и др.).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        status_data = await client_manager.get_user_status(user_identifier)
+        return UserStatusResponse(
+            success=True,
+            user_status=UserStatusInfo(**status_data),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении статуса пользователя: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

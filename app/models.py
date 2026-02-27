@@ -419,6 +419,14 @@ class ContactInfo(BaseModel):
     is_premium: bool = False
 
 
+class UserStatusInfo(BaseModel):
+    """Статус пользователя"""
+    user_id: int
+    status: str
+    was_online: Optional[str] = None
+    expires: Optional[str] = None
+
+
 class MessagesResponse(BaseModel):
     """Ответ со списком сообщений чата"""
     success: bool
@@ -493,3 +501,9 @@ class ContactsResponse(BaseModel):
     success: bool
     contacts: List[ContactInfo]
     total: int
+
+
+class UserStatusResponse(BaseModel):
+    """Ответ со статусом пользователя"""
+    success: bool
+    user_status: UserStatusInfo
