@@ -507,6 +507,20 @@ class UpdateUsernameRequest(BaseModel):
         return value
 
 
+class UpdateNameRequest(BaseModel):
+    """Запрос на изменение имени и фамилии"""
+    first_name: str = Field(..., description="Новое имя", min_length=1, max_length=64)
+    last_name: Optional[str] = Field(None, description="Новая фамилия", max_length=64)
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def trim_names(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
 class SubscribeChannelRequest(BaseModel):
     """Запрос на подписку на канал"""
     channel_identifier: str = Field(..., description="Username канала (@channel) или ID канала")
@@ -662,6 +676,14 @@ class UpdateUsernameResponse(BaseModel):
     """Ответ на изменение username"""
     success: bool
     username: str
+    message: str
+
+
+class UpdateNameResponse(BaseModel):
+    """Ответ на изменение имени и фамилии"""
+    success: bool
+    first_name: str
+    last_name: Optional[str] = None
     message: str
 
 
