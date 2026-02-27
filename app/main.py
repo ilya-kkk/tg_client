@@ -50,6 +50,7 @@ from app.models import (
     UpdateUsernameRequest,
     UpdateNameRequest,
     UpdateAboutRequest,
+    UpdateProfilePhotoRequest,
     SubscribeChannelRequest,
     PublishChannelPostRequest,
     EditChannelPostRequest,
@@ -61,6 +62,7 @@ from app.models import (
     UpdateUsernameResponse,
     UpdateNameResponse,
     UpdateAboutResponse,
+    UpdateProfilePhotoResponse,
     ContactsResponse,
     UserStatusResponse,
     ManageContactResponse,
@@ -720,6 +722,38 @@ async def update_account_about(request: UpdateAboutRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при изменении биографии: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/account/photo",
+    response_model=UpdateProfilePhotoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def update_account_photo(request: UpdateProfilePhotoRequest):
+    """
+    Изменяет фото профиля текущего аккаунта.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_profile_photo(request.photo_base64)
+        return UpdateProfilePhotoResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении фото профиля: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

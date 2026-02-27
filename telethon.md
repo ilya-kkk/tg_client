@@ -78,7 +78,7 @@
 - [x] Изменение имени и фамилии (`/account/name`, `PATCH`)  
 - [x] Изменение `username` (`/account/username`, `PATCH`)  
 - [x] Изменение биографии (about) (`/account/about`, `PATCH`)  
-- Изменение фото профиля  
+- [x] Изменение фото профиля (`/account/photo`, `PATCH`)  
 - [x] Получение информации о своём аккаунте (`/account/me`, `GET`)  
 - [x] Управление сессиями (отключение других устройств) (`/account/sessions/reset`, `POST`)  
 

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import binascii
 import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -1209,6 +1210,40 @@ class TelegramClientManager:
                 "about": about,
                 "message": "Биография обновлена",
             }
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def update_profile_photo(self, photo_base64: str) -> Dict[str, Any]:
+        """
+        Изменяет фото профиля текущего аккаунта.
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            b64_value = photo_base64.strip()
+            if b64_value.startswith("data:") and "," in b64_value:
+                b64_value = b64_value.split(",", 1)[1]
+
+            photo_bytes = base64.b64decode(b64_value, validate=True)
+            if not photo_bytes:
+                raise ValueError("Пустые данные фото")
+
+            uploaded = await self.client.upload_file(photo_bytes, file_name="profile.jpg")
+            await self.client(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+            return {
+                "success": True,
+                "message": "Фото профиля обновлено",
+            }
+        except binascii.Error:
+            raise ValueError("Некорректный формат base64 для photo_base64")
+        except ValueError:
+            raise
         except FloodWaitError as e:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:

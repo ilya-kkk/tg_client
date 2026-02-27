@@ -534,6 +534,19 @@ class UpdateAboutRequest(BaseModel):
         return value
 
 
+class UpdateProfilePhotoRequest(BaseModel):
+    """Запрос на изменение фото профиля"""
+    photo_base64: str = Field(..., description="Фото в base64 (можно с data URL префиксом)")
+
+    @field_validator("photo_base64")
+    @classmethod
+    def validate_photo_base64(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("photo_base64 не может быть пустым")
+        return value
+
+
 class SubscribeChannelRequest(BaseModel):
     """Запрос на подписку на канал"""
     channel_identifier: str = Field(..., description="Username канала (@channel) или ID канала")
@@ -710,6 +723,12 @@ class UpdateAboutResponse(BaseModel):
     """Ответ на изменение биографии"""
     success: bool
     about: str
+    message: str
+
+
+class UpdateProfilePhotoResponse(BaseModel):
+    """Ответ на изменение фото профиля"""
+    success: bool
     message: str
 
 
