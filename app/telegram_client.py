@@ -882,6 +882,41 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def archive_chat(self, chat_identifier: str, archive: bool = True) -> Dict[str, Any]:
+        """
+        Архивирует чат или возвращает его из архива.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            archive: True - архивировать, False - вернуть из архива
+
+        Returns:
+            Результат операции архивирования
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+            folder_id = 1 if archive else 0
+            await self.client.edit_folder(entity, folder=folder_id)
+
+            return {
+                "success": True,
+                "chat_id": getattr(entity, "id", None),
+                "archived": archive,
+                "message": "Чат архивирован" if archive else "Чат возвращен из архива",
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """

@@ -325,6 +325,20 @@ class FolderChatsRequest(BaseModel):
         return v
 
 
+class ArchiveChatRequest(BaseModel):
+    """Запрос на архивирование/разархивирование чата"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    archive: bool = Field(True, description="True: архивировать чат, False: вернуть из архива")
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Идентификатор чата не может быть пустым")
+        return v
+
+
 class FolderInfo(BaseModel):
     """Информация о папке"""
     name: str
@@ -393,4 +407,12 @@ class MessageReactionResponse(BaseModel):
     chat_id: Optional[int] = None
     message_id: int
     reaction: Optional[str] = None
+    message: str
+
+
+class ArchiveChatResponse(BaseModel):
+    """Ответ на архивирование/разархивирование чата"""
+    success: bool
+    chat_id: Optional[int] = None
+    archived: bool
     message: str

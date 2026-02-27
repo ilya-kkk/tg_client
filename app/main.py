@@ -34,6 +34,8 @@ from app.models import (
     QRCodeGenerateResponse,
     QRCodeStatusResponse,
     FolderChatsRequest,
+    ArchiveChatRequest,
+    ArchiveChatResponse,
     FoldersResponse,
     FolderInfo,
     MessageInfo,
@@ -327,6 +329,41 @@ async def get_chats_by_folder(request: FolderChatsRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при получении чатов из папки: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/chats/archive",
+    response_model=ArchiveChatResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def archive_chat(request: ArchiveChatRequest):
+    """
+    Архивирует чат или возвращает его из архива.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.archive_chat(
+            request.chat_identifier,
+            request.archive,
+        )
+        return ArchiveChatResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при архивировании чата: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
