@@ -49,6 +49,7 @@ from app.models import (
     SubscribeChannelRequest,
     PublishChannelPostRequest,
     EditChannelPostRequest,
+    DeleteChannelPostsRequest,
     MessagesResponse,
     UserInfoResponse,
     ContactsResponse,
@@ -59,6 +60,7 @@ from app.models import (
     UnsubscribeChannelResponse,
     PublishChannelPostResponse,
     EditChannelPostResponse,
+    DeleteChannelPostsResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -745,6 +747,41 @@ async def edit_channel_post(request: EditChannelPostRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при редактировании поста канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.delete(
+    "/channels/posts",
+    response_model=DeleteChannelPostsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def delete_channel_posts(request: DeleteChannelPostsRequest):
+    """
+    Удаляет один или несколько постов в канале.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.delete_channel_posts(
+            request.channel_identifier,
+            request.message_ids,
+        )
+        return DeleteChannelPostsResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при удалении постов канала: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",

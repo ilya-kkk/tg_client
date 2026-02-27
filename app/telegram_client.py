@@ -1366,6 +1366,44 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def delete_channel_posts(
+        self, channel_identifier: str, message_ids: List[int]
+    ) -> Dict[str, Any]:
+        """
+        Удаляет посты в канале.
+
+        Args:
+            channel_identifier: Username канала (@channel) или ID канала
+            message_ids: Список ID постов
+
+        Returns:
+            Результат удаления постов
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(channel_identifier)
+            if not isinstance(entity, Channel):
+                raise ValueError("Указанный идентификатор не является каналом")
+
+            await self.client.delete_messages(entity, message_ids)
+            return {
+                "success": True,
+                "channel_id": entity.id,
+                "deleted_count": len(message_ids),
+                "message": "Посты удалены",
+            }
+        except ValueError as e:
+            raise ValueError(f"Канал или посты не найдены: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """

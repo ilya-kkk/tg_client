@@ -522,6 +522,27 @@ class EditChannelPostRequest(BaseModel):
         return value
 
 
+class DeleteChannelPostsRequest(BaseModel):
+    """Запрос на удаление постов в канале"""
+    channel_identifier: str = Field(..., description="Username канала (@channel) или ID канала")
+    message_ids: List[int] = Field(..., description="Список ID постов для удаления", min_length=1)
+
+    @field_validator("channel_identifier")
+    @classmethod
+    def validate_channel_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("channel_identifier не может быть пустым")
+        return value
+
+    @field_validator("message_ids")
+    @classmethod
+    def validate_message_ids(cls, v: List[int]) -> List[int]:
+        if any(message_id <= 0 for message_id in v):
+            raise ValueError("Все message_ids должны быть положительными")
+        return v
+
+
 class MessagesResponse(BaseModel):
     """Ответ со списком сообщений чата"""
     success: bool
@@ -648,4 +669,12 @@ class EditChannelPostResponse(BaseModel):
     channel_id: Optional[int] = None
     message_id: Optional[int] = None
     date: Optional[str] = None
+    message: str
+
+
+class DeleteChannelPostsResponse(BaseModel):
+    """Ответ на удаление постов"""
+    success: bool
+    channel_id: Optional[int] = None
+    deleted_count: int
     message: str
