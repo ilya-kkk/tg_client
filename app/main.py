@@ -17,6 +17,8 @@ from app.models import (
     EditMessageResponse,
     DeleteMessagesRequest,
     DeleteMessagesResponse,
+    ForwardMessagesRequest,
+    ForwardMessagesResponse,
     ErrorResponse,
     ChatInfo,
     QRCodeGenerateResponse,
@@ -539,6 +541,45 @@ async def delete_messages(request: DeleteMessagesRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при удалении сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/forward",
+    response_model=ForwardMessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def forward_messages(request: ForwardMessagesRequest):
+    """
+    Пересылает сообщения из одного чата в другой.
+
+    from_chat_identifier - источник сообщений.
+    to_chat_identifier - чат назначения.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.forward_messages(
+            request.from_chat_identifier,
+            request.to_chat_identifier,
+            request.message_ids,
+        )
+        return ForwardMessagesResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при пересылке сообщений: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

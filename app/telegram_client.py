@@ -350,6 +350,57 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def forward_messages(
+        self,
+        from_chat_identifier: str,
+        to_chat_identifier: str,
+        message_ids: List[int],
+    ) -> Dict[str, Any]:
+        """
+        Пересылает сообщения из одного чата в другой.
+
+        Args:
+            from_chat_identifier: Источник сообщений (username или ID)
+            to_chat_identifier: Чат назначения (username или ID)
+            message_ids: Список ID сообщений для пересылки
+
+        Returns:
+            Результат пересылки сообщений
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            from_entity = await self.client.get_entity(from_chat_identifier)
+            to_entity = await self.client.get_entity(to_chat_identifier)
+
+            forwarded = await self.client.forward_messages(
+                to_entity,
+                message_ids,
+                from_entity,
+            )
+
+            if not isinstance(forwarded, list):
+                forwarded = [forwarded]
+
+            forwarded_ids = [msg.id for msg in forwarded if msg is not None]
+
+            return {
+                "success": True,
+                "forwarded_count": len(forwarded_ids),
+                "message_ids": forwarded_ids,
+                "message": "Сообщения пересланы",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка чатов или сообщений: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_messages(self, chat_identifier: str, limit: int = 50) -> Dict[str, Any]:
         """

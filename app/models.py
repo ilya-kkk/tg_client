@@ -155,6 +155,36 @@ class DeleteMessagesResponse(BaseModel):
     message: str
 
 
+class ForwardMessagesRequest(BaseModel):
+    """Запрос на пересылку сообщений"""
+    from_chat_identifier: str = Field(..., description="Источник: username (@username) или ID чата")
+    to_chat_identifier: str = Field(..., description="Назначение: username (@username) или ID чата")
+    message_ids: List[int] = Field(..., description="Список ID сообщений для пересылки", min_length=1)
+
+    @field_validator("from_chat_identifier", "to_chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Идентификатор чата не может быть пустым")
+        return v
+
+    @field_validator("message_ids")
+    @classmethod
+    def validate_message_ids(cls, v: List[int]) -> List[int]:
+        if any(message_id <= 0 for message_id in v):
+            raise ValueError("Все ID сообщений должны быть положительными")
+        return v
+
+
+class ForwardMessagesResponse(BaseModel):
+    """Ответ на пересылку сообщений"""
+    success: bool
+    forwarded_count: int
+    message_ids: List[int]
+    message: str
+
+
 class ErrorResponse(BaseModel):
     """Ответ об ошибке"""
     success: bool = False
