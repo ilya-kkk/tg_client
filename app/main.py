@@ -45,11 +45,13 @@ from app.models import (
     ContactInfo,
     UserStatusInfo,
     ManageContactRequest,
+    ManageBlockRequest,
     MessagesResponse,
     UserInfoResponse,
     ContactsResponse,
     UserStatusResponse,
     ManageContactResponse,
+    ManageBlockResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -488,6 +490,41 @@ async def manage_contact(request: ManageContactRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при изменении контакта: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/users/block",
+    response_model=ManageBlockResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def manage_block(request: ManageBlockRequest):
+    """
+    Блокирует или разблокирует пользователя.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.manage_block(
+            action=request.action,
+            user_identifier=request.user_identifier,
+        )
+        return ManageBlockResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при блокировке/разблокировке пользователя: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

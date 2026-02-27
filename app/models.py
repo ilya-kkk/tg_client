@@ -458,6 +458,28 @@ class ManageContactRequest(BaseModel):
         return value or None
 
 
+class ManageBlockRequest(BaseModel):
+    """Запрос на блокировку/разблокировку пользователя"""
+    action: str = Field(..., description="Действие: block или unblock")
+    user_identifier: str = Field(..., description="Username/ID/phone пользователя")
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, v: str) -> str:
+        value = v.strip().lower()
+        if value not in {"block", "unblock"}:
+            raise ValueError("action должен быть 'block' или 'unblock'")
+        return value
+
+    @field_validator("user_identifier")
+    @classmethod
+    def validate_user_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("user_identifier не может быть пустым")
+        return value
+
+
 class MessagesResponse(BaseModel):
     """Ответ со списком сообщений чата"""
     success: bool
@@ -544,4 +566,12 @@ class ManageContactResponse(BaseModel):
     """Ответ на добавление/удаление контакта"""
     success: bool
     action: str
+    message: str
+
+
+class ManageBlockResponse(BaseModel):
+    """Ответ на блокировку/разблокировку пользователя"""
+    success: bool
+    action: str
+    user_id: Optional[int] = None
     message: str

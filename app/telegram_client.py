@@ -1179,6 +1179,48 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def manage_block(self, action: str, user_identifier: str) -> Dict[str, Any]:
+        """
+        Блокирует или разблокирует пользователя.
+
+        Args:
+            action: block/unblock
+            user_identifier: username/id/phone пользователя
+
+        Returns:
+            Результат операции
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        action = action.lower()
+        if action not in {"block", "unblock"}:
+            raise ValueError("action должен быть 'block' или 'unblock'")
+
+        try:
+            entity = await self.client.get_input_entity(user_identifier)
+            if action == "block":
+                await self.client(functions.contacts.BlockRequest(id=entity))
+            else:
+                await self.client(functions.contacts.UnblockRequest(id=entity))
+
+            user_id = getattr(entity, "user_id", None)
+            return {
+                "success": True,
+                "action": action,
+                "user_id": user_id,
+                "message": "Пользователь заблокирован" if action == "block" else "Пользователь разблокирован",
+            }
+        except ValueError as e:
+            raise ValueError(f"Пользователь не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_dialogs_by_folder(self, folder_name: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
