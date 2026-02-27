@@ -267,6 +267,52 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много сообщений. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def edit_message(self, chat_identifier: str, message_id: int, message: str) -> Dict[str, Any]:
+        """
+        Редактирует ранее отправленное сообщение в чате.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            message_id: ID сообщения для редактирования
+            message: Новый текст сообщения
+
+        Returns:
+            Информация об отредактированном сообщении
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+            edited_message = await self.client.edit_message(entity, message_id, message)
+
+            chat_id: Optional[int] = None
+            peer = getattr(edited_message, "peer_id", None)
+            if peer is not None:
+                if hasattr(peer, "channel_id"):
+                    chat_id = peer.channel_id
+                elif hasattr(peer, "chat_id"):
+                    chat_id = peer.chat_id
+                elif hasattr(peer, "user_id"):
+                    chat_id = peer.user_id
+
+            return {
+                "success": True,
+                "message_id": edited_message.id,
+                "chat_id": chat_id,
+                "date": edited_message.date.isoformat() if edited_message.date else None,
+                "message": "Сообщение отредактировано"
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат или сообщение не найдены: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def get_messages(self, chat_identifier: str, limit: int = 50) -> Dict[str, Any]:
         """

@@ -13,6 +13,8 @@ from app.models import (
     ChatsResponse,
     SendMessageRequest,
     SendMessageResponse,
+    EditMessageRequest,
+    EditMessageResponse,
     ErrorResponse,
     ChatInfo,
     QRCodeGenerateResponse,
@@ -455,6 +457,46 @@ async def send_message(request: SendMessageRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке сообщения: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/messages/edit",
+    response_model=EditMessageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def edit_message(request: EditMessageRequest):
+    """
+    Редактирует ранее отправленное сообщение в чате.
+
+    chat_identifier может быть:
+    - Username чата (например, @username)
+    - ID чата (число)
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.edit_message(
+            request.chat_identifier,
+            request.message_id,
+            request.message,
+        )
+        return EditMessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании сообщения: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
