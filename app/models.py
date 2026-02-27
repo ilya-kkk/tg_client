@@ -685,6 +685,12 @@ class AccountInfoResponse(BaseModel):
     account: AccountInfo
 
 
+class ResetSessionsResponse(BaseModel):
+    """Ответ на отключение других сессий"""
+    success: bool
+    message: str
+
+
 class UpdateUsernameResponse(BaseModel):
     """Ответ на изменение username"""
     success: bool

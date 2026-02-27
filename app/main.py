@@ -57,6 +57,7 @@ from app.models import (
     MessagesResponse,
     UserInfoResponse,
     AccountInfoResponse,
+    ResetSessionsResponse,
     UpdateUsernameResponse,
     UpdateNameResponse,
     UpdateAboutResponse,
@@ -719,6 +720,38 @@ async def update_account_about(request: UpdateAboutRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при изменении биографии: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/account/sessions/reset",
+    response_model=ResetSessionsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def reset_account_sessions():
+    """
+    Отключает все другие устройства (сессии), кроме текущей.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.reset_other_sessions()
+        return ResetSessionsResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отключении других сессий: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

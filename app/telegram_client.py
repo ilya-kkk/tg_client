@@ -1214,6 +1214,27 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def reset_other_sessions(self) -> Dict[str, Any]:
+        """
+        Отключает все остальные устройства (сессии), кроме текущей.
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            await self.client(functions.auth.ResetAuthorizationsRequest())
+            return {
+                "success": True,
+                "message": "Другие сессии отключены",
+            }
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def manage_contact(
         self,
         action: str,
