@@ -243,6 +243,22 @@ class MarkMessagesReadRequest(BaseModel):
         return v
 
 
+class PinMessageRequest(BaseModel):
+    """Запрос на закрепление/открепление сообщения"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    message_id: int = Field(..., description="ID сообщения", gt=0)
+    unpin: bool = Field(False, description="True: открепить сообщение, False: закрепить сообщение")
+    notify: bool = Field(False, description="Отправлять уведомление участникам при закреплении")
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Идентификатор чата не может быть пустым")
+        return v
+
+
 class ErrorResponse(BaseModel):
     """Ответ об ошибке"""
     success: bool = False
@@ -331,4 +347,13 @@ class MarkMessagesReadResponse(BaseModel):
     success: bool
     chat_id: Optional[int] = None
     max_id: Optional[int] = None
+    message: str
+
+
+class PinMessageResponse(BaseModel):
+    """Ответ на закрепление/открепление сообщения"""
+    success: bool
+    chat_id: Optional[int] = None
+    message_id: int
+    action: str
     message: str

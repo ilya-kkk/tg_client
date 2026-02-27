@@ -719,6 +719,57 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def pin_message(
+        self,
+        chat_identifier: str,
+        message_id: int,
+        unpin: bool = False,
+        notify: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Закрепляет или открепляет сообщение в чате.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            message_id: ID сообщения
+            unpin: True для открепления, False для закрепления
+            notify: Отправлять уведомление участникам (для закрепления)
+
+        Returns:
+            Результат операции
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+            await self.client.pin_message(
+                entity,
+                message_id,
+                notify=notify,
+                pm_oneside=False,
+                unpin=unpin,
+            )
+
+            action = "unpin" if unpin else "pin"
+            action_text = "Сообщение откреплено" if unpin else "Сообщение закреплено"
+            return {
+                "success": True,
+                "chat_id": getattr(entity, "id", None),
+                "message_id": message_id,
+                "action": action,
+                "message": action_text,
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат или сообщение не найдены: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def download_media(self, chat_identifier: str, message_id: int) -> Dict[str, Any]:
         """
         Скачивает медиа по ID сообщения в чате.

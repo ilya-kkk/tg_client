@@ -25,6 +25,8 @@ from app.models import (
     SearchMessagesResponse,
     MarkMessagesReadRequest,
     MarkMessagesReadResponse,
+    PinMessageRequest,
+    PinMessageResponse,
     ErrorResponse,
     ChatInfo,
     QRCodeGenerateResponse,
@@ -701,6 +703,43 @@ async def mark_messages_read(request: MarkMessagesReadRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при отметке сообщений как прочитанных: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/messages/pin",
+    response_model=PinMessageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def pin_message(request: PinMessageRequest):
+    """
+    Закрепляет или открепляет сообщение в чате.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+
+    try:
+        result = await client_manager.pin_message(
+            request.chat_identifier,
+            request.message_id,
+            request.unpin,
+            request.notify,
+        )
+        return PinMessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при закреплении/откреплении сообщения: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",
