@@ -94,6 +94,8 @@ from app.models import (
     UserStatusResponse,
     ManageContactResponse,
     ManageBlockResponse,
+    SendBotCommandRequest,
+    SendBotCommandResponse,
     SubscribeChannelResponse,
     UnsubscribeChannelResponse,
     PublishChannelPostResponse,
@@ -132,6 +134,10 @@ tags_metadata = [
     {
         "name": "channels",
         "description": "Работа с каналами",
+    },
+    {
+        "name": "bots",
+        "description": "Базовая работа с ботами",
     },
     {
         "name": "account",
@@ -917,6 +923,41 @@ async def manage_block(request: ManageBlockRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при блокировке/разблокировке пользователя: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/bots/command",
+    response_model=SendBotCommandResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["bots"],
+)
+async def send_bot_command(request: SendBotCommandRequest):
+    """
+    Отправляет команду боту (например, /start).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_bot_command(
+            bot_identifier=request.bot_identifier,
+            command=request.command,
+        )
+        return SendBotCommandResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке команды боту: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

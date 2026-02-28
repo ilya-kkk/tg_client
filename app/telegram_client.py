@@ -2364,6 +2364,43 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def send_bot_command(self, bot_identifier: str, command: str) -> Dict[str, Any]:
+        """
+        Отправляет команду боту.
+
+        Args:
+            bot_identifier: Username/ID бота
+            command: Команда (например, /start)
+
+        Returns:
+            Результат отправки команды
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            bot_entity = await self.client.get_entity(bot_identifier)
+            if not isinstance(bot_entity, User) or not bool(getattr(bot_entity, "bot", False)):
+                raise ValueError("Указанный идентификатор не принадлежит боту")
+
+            sent_message = await self.client.send_message(bot_entity, command)
+            return {
+                "success": True,
+                "bot_id": bot_entity.id,
+                "message_id": sent_message.id,
+                "date": sent_message.date.isoformat() if sent_message.date else None,
+                "message": "Команда отправлена боту",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка отправки команды боту: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def subscribe_channel(self, channel_identifier: str) -> Dict[str, Any]:
         """
         Подписывает текущий аккаунт на канал.

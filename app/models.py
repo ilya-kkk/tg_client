@@ -1194,6 +1194,37 @@ class ManageBlockResponse(BaseModel):
     message: str
 
 
+class SendBotCommandRequest(BaseModel):
+    """Запрос на отправку команды боту"""
+    bot_identifier: str = Field(..., description="Username/ID бота")
+    command: str = Field(..., description="Команда (например, /start)", min_length=2, max_length=256)
+
+    @field_validator("bot_identifier")
+    @classmethod
+    def validate_bot_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("bot_identifier не может быть пустым")
+        return value
+
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, v: str) -> str:
+        value = v.strip()
+        if not value.startswith("/"):
+            raise ValueError("command должна начинаться с '/'")
+        return value
+
+
+class SendBotCommandResponse(BaseModel):
+    """Ответ на отправку команды боту"""
+    success: bool
+    bot_id: Optional[int] = None
+    message_id: Optional[int] = None
+    date: Optional[str] = None
+    message: str
+
+
 class SubscribeChannelResponse(BaseModel):
     """Ответ на подписку на канал"""
     success: bool
