@@ -708,6 +708,15 @@ class ChatParticipantsResponse(BaseModel):
     total: int
 
 
+class ChatAdminsResponse(BaseModel):
+    """Ответ со списком администраторов чата/канала"""
+    success: bool
+    chat_id: int
+    chat_name: Optional[str] = None
+    admins: List[ParticipantInfo]
+    total: int
+
+
 class UserStatusResponse(BaseModel):
     """Ответ со статусом пользователя"""
     success: bool

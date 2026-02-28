@@ -66,6 +66,7 @@ from app.models import (
     UpdateProfilePhotoResponse,
     ContactsResponse,
     ChatParticipantsResponse,
+    ChatAdminsResponse,
     UserStatusResponse,
     ManageContactResponse,
     ManageBlockResponse,
@@ -453,6 +454,49 @@ async def get_chat_participants(chat_identifier: str, limit: int = 100, search: 
         )
     except Exception as e:
         logger.error(f"Ошибка при получении участников чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/chats/admins",
+    response_model=ChatAdminsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def get_chat_admins(chat_identifier: str, limit: int = 100, search: str = ""):
+    """
+    Получает список администраторов группы/супергруппы/канала.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.get_chat_admins(
+            chat_identifier=chat_identifier,
+            limit=limit,
+            search=search,
+        )
+        admins = [ParticipantInfo(**p) for p in result["admins"]]
+        return ChatAdminsResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            admins=admins,
+            total=len(admins),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении администраторов чата: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
