@@ -37,6 +37,7 @@ from app.models import (
     QRCodeStatusResponse,
     FolderChatsRequest,
     ArchiveChatRequest,
+    CreateChatRequest,
     ArchiveChatResponse,
     FoldersResponse,
     FolderInfo,
@@ -69,6 +70,7 @@ from app.models import (
     ChatParticipantsResponse,
     ChatAdminsResponse,
     ChatInfoResponse,
+    CreateChatResponse,
     UserStatusResponse,
     ManageContactResponse,
     ManageBlockResponse,
@@ -413,6 +415,43 @@ async def archive_chat(request: ArchiveChatRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при архивировании чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/chats/create",
+    response_model=CreateChatResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def create_chat(request: CreateChatRequest):
+    """
+    Создает новую группу или канал.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.create_chat(
+            type=request.type,
+            title=request.title,
+            about=request.about,
+            user_identifiers=request.user_identifiers,
+        )
+        return CreateChatResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при создании чата/канала: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

@@ -494,6 +494,86 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def create_chat(
+        self,
+        type: str,
+        title: str,
+        about: Optional[str] = None,
+        user_identifiers: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Создает группу или канал.
+
+        Args:
+            type: group или channel
+            title: Название
+            about: Описание (для channel)
+            user_identifiers: Участники для группы
+
+        Returns:
+            Результат создания
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        type_value = type.strip().lower()
+        if type_value not in {"group", "channel"}:
+            raise ValueError("type должен быть 'group' или 'channel'")
+
+        try:
+            if type_value == "group":
+                users_input = user_identifiers or []
+                if not users_input:
+                    raise ValueError("Для создания группы нужно передать хотя бы одного пользователя в user_identifiers")
+
+                entities = []
+                for user_identifier in users_input:
+                    entities.append(await self.client.get_input_entity(user_identifier))
+
+                updates = await self.client(
+                    functions.messages.CreateChatRequest(
+                        users=entities,
+                        title=title,
+                    )
+                )
+            else:
+                updates = await self.client(
+                    functions.channels.CreateChannelRequest(
+                        title=title,
+                        about=about or "",
+                        megagroup=False,
+                    )
+                )
+
+            chat_id: Optional[int] = None
+            chat_title = title
+            chat_username: Optional[str] = None
+
+            for item in getattr(updates, "chats", []) or []:
+                chat_id = getattr(item, "id", chat_id)
+                chat_title = getattr(item, "title", chat_title) or chat_title
+                chat_username = getattr(item, "username", chat_username)
+                if chat_id is not None:
+                    break
+
+            return {
+                "success": True,
+                "chat_id": chat_id,
+                "type": type_value,
+                "title": chat_title,
+                "username": chat_username,
+                "message": "Группа создана" if type_value == "group" else "Канал создан",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка создания чата: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def send_message(self, chat_identifier: str, message: str) -> Dict[str, Any]:
         """

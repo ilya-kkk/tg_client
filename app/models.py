@@ -382,6 +382,47 @@ class ArchiveChatRequest(BaseModel):
         return v
 
 
+class CreateChatRequest(BaseModel):
+    """Запрос на создание группы или канала"""
+    type: str = Field(..., description="Тип: group или channel")
+    title: str = Field(..., description="Название группы/канала", min_length=1, max_length=255)
+    about: Optional[str] = Field(None, description="Описание канала (для type=channel)", max_length=255)
+    user_identifiers: List[str] = Field(
+        default_factory=list,
+        description="Список пользователей для добавления в группу (для type=group)",
+    )
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        value = v.strip().lower()
+        if value not in {"group", "channel"}:
+            raise ValueError("type должен быть 'group' или 'channel'")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("title не может быть пустым")
+        return value
+
+    @field_validator("about")
+    @classmethod
+    def validate_about(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+    @field_validator("user_identifiers")
+    @classmethod
+    def validate_user_identifiers(cls, v: List[str]) -> List[str]:
+        cleaned = [x.strip() for x in v if x and x.strip()]
+        return cleaned
+
+
 class FolderInfo(BaseModel):
     """Информация о папке"""
     name: str
@@ -737,6 +778,16 @@ class ChatInfoResponse(BaseModel):
     """Ответ с расширенной информацией о чате"""
     success: bool
     chat: ChatDetailsInfo
+
+
+class CreateChatResponse(BaseModel):
+    """Ответ на создание группы/канала"""
+    success: bool
+    chat_id: Optional[int] = None
+    type: str
+    title: str
+    username: Optional[str] = None
+    message: str
 
 
 class UserStatusResponse(BaseModel):
