@@ -1225,6 +1225,32 @@ class SendBotCommandResponse(BaseModel):
     message: str
 
 
+class BotInlineButtonClickRequest(BaseModel):
+    """Запрос на нажатие inline-кнопки в сообщении"""
+    chat_identifier: str = Field(..., description="Username/ID чата или бота")
+    message_id: int = Field(..., description="ID сообщения с inline-кнопками", gt=0)
+    row: int = Field(..., description="Индекс строки кнопки (с 0)", ge=0)
+    col: int = Field(..., description="Индекс колонки кнопки (с 0)", ge=0)
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("chat_identifier не может быть пустым")
+        return value
+
+
+class BotInlineButtonClickResponse(BaseModel):
+    """Ответ на нажатие inline-кнопки"""
+    success: bool
+    message_id: int
+    row: int
+    col: int
+    result: Optional[str] = None
+    message: str
+
+
 class SubscribeChannelResponse(BaseModel):
     """Ответ на подписку на канал"""
     success: bool

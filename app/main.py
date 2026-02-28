@@ -96,6 +96,8 @@ from app.models import (
     ManageBlockResponse,
     SendBotCommandRequest,
     SendBotCommandResponse,
+    BotInlineButtonClickRequest,
+    BotInlineButtonClickResponse,
     SubscribeChannelResponse,
     UnsubscribeChannelResponse,
     PublishChannelPostResponse,
@@ -958,6 +960,43 @@ async def send_bot_command(request: SendBotCommandRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке команды боту: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/bots/buttons/click",
+    response_model=BotInlineButtonClickResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["bots"],
+)
+async def click_bot_inline_button(request: BotInlineButtonClickRequest):
+    """
+    Нажимает inline-кнопку в сообщении бота.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.click_inline_button(
+            chat_identifier=request.chat_identifier,
+            message_id=request.message_id,
+            row=request.row,
+            col=request.col,
+        )
+        return BotInlineButtonClickResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при нажатии inline-кнопки: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

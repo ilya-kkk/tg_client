@@ -2401,6 +2401,57 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def click_inline_button(
+        self,
+        chat_identifier: str,
+        message_id: int,
+        row: int,
+        col: int,
+    ) -> Dict[str, Any]:
+        """
+        Нажимает inline-кнопку в сообщении.
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+            msg = await self.client.get_messages(entity, ids=message_id)
+            if not msg:
+                raise ValueError("Сообщение не найдено")
+
+            buttons = getattr(msg, "buttons", None)
+            if not buttons:
+                raise ValueError("В сообщении нет inline-кнопок")
+            if row >= len(buttons):
+                raise ValueError("Некорректный индекс row")
+            if col >= len(buttons[row]):
+                raise ValueError("Некорректный индекс col")
+
+            click_result = await msg.click(row, col)
+
+            result_text: Optional[str] = None
+            if click_result is not None:
+                result_text = str(click_result)
+
+            return {
+                "success": True,
+                "message_id": message_id,
+                "row": row,
+                "col": col,
+                "result": result_text,
+                "message": "Inline-кнопка нажата",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка нажатия inline-кнопки: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def subscribe_channel(self, channel_identifier: str) -> Dict[str, Any]:
         """
         Подписывает текущий аккаунт на канал.
