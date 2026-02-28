@@ -15,10 +15,14 @@ from app.models import (
     SendMediaRequest,
     SendVoiceRequest,
     SendStickerGifRequest,
+    SendLocationRequest,
+    SendContactMessageRequest,
     SendMessageResponse,
     SendMediaResponse,
     SendVoiceResponse,
     SendStickerGifResponse,
+    SendLocationResponse,
+    SendContactMessageResponse,
     EditMessageRequest,
     EditMessageResponse,
     DeleteMessagesRequest,
@@ -1612,6 +1616,81 @@ async def send_sticker_gif(request: SendStickerGifRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке стикера/GIF: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-location",
+    response_model=SendLocationResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_location(request: SendLocationRequest):
+    """
+    Отправляет геолокацию в чат.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_location(
+            chat_identifier=request.chat_identifier,
+            latitude=request.latitude,
+            longitude=request.longitude,
+            caption=request.caption,
+        )
+        return SendLocationResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке геолокации: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-contact",
+    response_model=SendContactMessageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_contact_message(request: SendContactMessageRequest):
+    """
+    Отправляет контакт в чат.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_contact_message(
+            chat_identifier=request.chat_identifier,
+            phone_number=request.phone_number,
+            first_name=request.first_name,
+            last_name=request.last_name,
+            caption=request.caption,
+        )
+        return SendContactMessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке контакта: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

@@ -232,6 +232,73 @@ class SendStickerGifResponse(BaseModel):
     message: str
 
 
+class SendLocationRequest(BaseModel):
+    """Запрос на отправку геолокации"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    latitude: float = Field(..., description="Широта", ge=-90.0, le=90.0)
+    longitude: float = Field(..., description="Долгота", ge=-180.0, le=180.0)
+    caption: Optional[str] = Field(None, description="Подпись к геолокации (опционально)", max_length=1024)
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("chat_identifier не может быть пустым")
+        return value
+
+    @field_validator("caption")
+    @classmethod
+    def validate_caption(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class SendLocationResponse(BaseModel):
+    """Ответ на отправку геолокации"""
+    success: bool
+    message_id: Optional[int] = None
+    chat_id: Optional[int] = None
+    date: Optional[str] = None
+    message: str
+
+
+class SendContactMessageRequest(BaseModel):
+    """Запрос на отправку контакта сообщением"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    phone_number: str = Field(..., description="Телефон контакта")
+    first_name: str = Field(..., description="Имя контакта", min_length=1, max_length=64)
+    last_name: Optional[str] = Field(None, description="Фамилия контакта", max_length=64)
+    caption: Optional[str] = Field(None, description="Подпись к контакту (опционально)", max_length=1024)
+
+    @field_validator("chat_identifier", "phone_number", "first_name")
+    @classmethod
+    def validate_required_text(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Поле не может быть пустым")
+        return value
+
+    @field_validator("last_name", "caption")
+    @classmethod
+    def validate_optional_text(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class SendContactMessageResponse(BaseModel):
+    """Ответ на отправку контакта"""
+    success: bool
+    message_id: Optional[int] = None
+    chat_id: Optional[int] = None
+    date: Optional[str] = None
+    message: str
+
+
 class EditMessageRequest(BaseModel):
     """Запрос на редактирование сообщения"""
     chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")

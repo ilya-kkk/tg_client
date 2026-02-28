@@ -1139,6 +1139,114 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def send_location(
+        self,
+        chat_identifier: str,
+        latitude: float,
+        longitude: float,
+        caption: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Отправляет геолокацию в чат.
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            media = types.InputMediaGeoPoint(
+                geo_point=types.InputGeoPoint(
+                    lat=latitude,
+                    long=longitude,
+                    accuracy_radius=None,
+                )
+            )
+            sent_message = await self.client.send_message(
+                chat_identifier,
+                message=caption or "",
+                file=media,
+            )
+
+            chat_id: Optional[int] = None
+            peer = getattr(sent_message, "peer_id", None)
+            if peer is not None:
+                if hasattr(peer, "channel_id"):
+                    chat_id = peer.channel_id
+                elif hasattr(peer, "chat_id"):
+                    chat_id = peer.chat_id
+                elif hasattr(peer, "user_id"):
+                    chat_id = peer.user_id
+
+            return {
+                "success": True,
+                "message_id": sent_message.id,
+                "chat_id": chat_id,
+                "date": sent_message.date.isoformat() if sent_message.date else None,
+                "message": "Геолокация отправлена",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка отправки геолокации: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def send_contact_message(
+        self,
+        chat_identifier: str,
+        phone_number: str,
+        first_name: str,
+        last_name: Optional[str] = None,
+        caption: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Отправляет контакт в чат.
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            media = types.InputMediaContact(
+                phone_number=phone_number,
+                first_name=first_name,
+                last_name=last_name or "",
+                vcard="",
+            )
+            sent_message = await self.client.send_message(
+                chat_identifier,
+                message=caption or "",
+                file=media,
+            )
+
+            chat_id: Optional[int] = None
+            peer = getattr(sent_message, "peer_id", None)
+            if peer is not None:
+                if hasattr(peer, "channel_id"):
+                    chat_id = peer.channel_id
+                elif hasattr(peer, "chat_id"):
+                    chat_id = peer.chat_id
+                elif hasattr(peer, "user_id"):
+                    chat_id = peer.user_id
+
+            return {
+                "success": True,
+                "message_id": sent_message.id,
+                "chat_id": chat_id,
+                "date": sent_message.date.isoformat() if sent_message.date else None,
+                "message": "Контакт отправлен",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка отправки контакта: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def edit_message(self, chat_identifier: str, message_id: int, message: str) -> Dict[str, Any]:
         """
         Редактирует ранее отправленное сообщение в чате.
