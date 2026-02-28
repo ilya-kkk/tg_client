@@ -495,6 +495,78 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def update_chat_info(
+        self,
+        chat_identifier: str,
+        title: Optional[str] = None,
+        about: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Изменяет название и/или описание чата.
+
+        Args:
+            chat_identifier: Username/ID чата
+            title: Новое название
+            about: Новое описание
+
+        Returns:
+            Результат изменения
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        if title is None and about is None:
+            raise ValueError("Нужно передать хотя бы одно поле: title или about")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+
+            if isinstance(entity, Chat):
+                if title is not None:
+                    await self.client(
+                        functions.messages.EditChatTitleRequest(
+                            chat_id=entity.id,
+                            title=title,
+                        )
+                    )
+                if about is not None:
+                    raise ValueError("Описание (about) нельзя изменить для обычной группы, только для супергруппы/канала")
+            elif isinstance(entity, Channel):
+                if title is not None:
+                    await self.client(
+                        functions.channels.EditTitleRequest(
+                            channel=entity,
+                            title=title,
+                        )
+                    )
+                if about is not None:
+                    await self.client(
+                        functions.channels.EditAboutRequest(
+                            channel=entity,
+                            about=about,
+                        )
+                    )
+            else:
+                raise ValueError("Указанный chat_identifier не является группой/каналом")
+
+            chat_info = await self.get_chat_info(chat_identifier)
+            return {
+                "success": True,
+                "chat_id": chat_info.get("id"),
+                "title": chat_info.get("name"),
+                "about": chat_info.get("description"),
+                "message": "Параметры чата обновлены",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка изменения чата: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def create_chat(
         self,
         type: str,

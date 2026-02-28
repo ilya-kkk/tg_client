@@ -780,6 +780,38 @@ class ChatInfoResponse(BaseModel):
     chat: ChatDetailsInfo
 
 
+class UpdateChatInfoRequest(BaseModel):
+    """Запрос на изменение названия и/или описания чата"""
+    chat_identifier: str = Field(..., description="Username/ID группы, супергруппы или канала")
+    title: Optional[str] = Field(None, description="Новое название чата", max_length=255)
+    about: Optional[str] = Field(None, description="Новое описание чата", max_length=255)
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("chat_identifier не может быть пустым")
+        return value
+
+    @field_validator("title", "about")
+    @classmethod
+    def validate_optional_text(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class UpdateChatInfoResponse(BaseModel):
+    """Ответ на изменение названия/описания чата"""
+    success: bool
+    chat_id: Optional[int] = None
+    title: Optional[str] = None
+    about: Optional[str] = None
+    message: str
+
+
 class CreateChatResponse(BaseModel):
     """Ответ на создание группы/канала"""
     success: bool

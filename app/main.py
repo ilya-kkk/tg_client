@@ -45,6 +45,7 @@ from app.models import (
     FolderInfo,
     MessageInfo,
     ChatDetailsInfo,
+    UpdateChatInfoRequest,
     UserInfo,
     AccountInfo,
     ContactInfo,
@@ -72,6 +73,7 @@ from app.models import (
     ChatParticipantsResponse,
     ChatAdminsResponse,
     ChatInfoResponse,
+    UpdateChatInfoResponse,
     CreateChatResponse,
     InviteUsersResponse,
     RemoveUsersResponse,
@@ -648,6 +650,42 @@ async def get_chat_info(chat_identifier: str):
         )
     except Exception as e:
         logger.error(f"Ошибка при получении информации о чате: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/chats/info",
+    response_model=UpdateChatInfoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def update_chat_info(request: UpdateChatInfoRequest):
+    """
+    Изменяет название и/или описание чата.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_chat_info(
+            chat_identifier=request.chat_identifier,
+            title=request.title,
+            about=request.about,
+        )
+        return UpdateChatInfoResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении информации чата: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
