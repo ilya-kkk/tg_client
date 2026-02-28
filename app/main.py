@@ -44,6 +44,7 @@ from app.models import (
     UserInfo,
     AccountInfo,
     ContactInfo,
+    ParticipantInfo,
     UserStatusInfo,
     ManageContactRequest,
     ManageBlockRequest,
@@ -64,6 +65,7 @@ from app.models import (
     UpdateAboutResponse,
     UpdateProfilePhotoResponse,
     ContactsResponse,
+    ChatParticipantsResponse,
     UserStatusResponse,
     ManageContactResponse,
     ManageBlockResponse,
@@ -408,6 +410,49 @@ async def archive_chat(request: ArchiveChatRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при архивировании чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/chats/participants",
+    response_model=ChatParticipantsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def get_chat_participants(chat_identifier: str, limit: int = 100, search: str = ""):
+    """
+    Получает участников группы/супергруппы/канала.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.get_chat_participants(
+            chat_identifier=chat_identifier,
+            limit=limit,
+            search=search,
+        )
+        participants = [ParticipantInfo(**p) for p in result["participants"]]
+        return ChatParticipantsResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            participants=participants,
+            total=len(participants),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении участников чата: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

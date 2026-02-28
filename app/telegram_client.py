@@ -234,6 +234,95 @@ class TelegramClientManager:
             dialogs.append(chat_info)
         
         return dialogs
+
+    async def get_chat_participants(
+        self,
+        chat_identifier: str,
+        limit: int = 100,
+        search: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Получает участников группы/супергруппы/канала.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            limit: Максимальное количество участников
+            search: Поисковая строка по участникам (опционально)
+
+        Returns:
+            Словарь с информацией о чате и списком участников
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+            if isinstance(entity, User):
+                raise ValueError("Указанный идентификатор относится к личному чату, а не к группе/каналу")
+
+            chat_id = getattr(entity, "id", 0)
+            chat_name = getattr(entity, "title", None) or "Chat"
+            search_value = (search or "").strip()
+
+            users: List[User] = []
+
+            # Для каналов/супергрупп используем общий механизм участников
+            if isinstance(entity, Channel):
+                users = await self.client.get_participants(
+                    entity,
+                    limit=limit,
+                    search=search_value,
+                )
+            # Для базовых групп (Chat) берем участников через full chat
+            elif isinstance(entity, Chat):
+                full = await self.client(functions.messages.GetFullChatRequest(chat_id=entity.id))
+                users_by_id = {u.id: u for u in (full.users or []) if isinstance(u, User)}
+                participants = getattr(getattr(full.full_chat, "participants", None), "participants", []) or []
+                for participant in participants:
+                    user = users_by_id.get(getattr(participant, "user_id", 0))
+                    if user is None:
+                        continue
+                    if search_value:
+                        searchable = " ".join(
+                            x for x in [user.username, user.first_name, user.last_name] if x
+                        ).lower()
+                        if search_value.lower() not in searchable:
+                            continue
+                    users.append(user)
+                users = users[:limit]
+
+            result_participants: List[Dict[str, Any]] = []
+            for user in users:
+                result_participants.append(
+                    {
+                        "id": user.id,
+                        "username": user.username,
+                        "first_name": user.first_name,
+                        "last_name": user.last_name,
+                        "is_bot": bool(getattr(user, "bot", False)),
+                        "is_verified": bool(getattr(user, "verified", False)),
+                        "is_scam": bool(getattr(user, "scam", False)),
+                        "is_fake": bool(getattr(user, "fake", False)),
+                        "is_premium": bool(getattr(user, "premium", False)),
+                    }
+                )
+
+            return {
+                "success": True,
+                "chat_id": chat_id,
+                "chat_name": chat_name,
+                "participants": result_participants,
+                "total": len(result_participants),
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат не найден или недоступен: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def send_message(self, chat_identifier: str, message: str) -> Dict[str, Any]:
         """
