@@ -13,8 +13,10 @@ from app.models import (
     ChatsResponse,
     SendMessageRequest,
     SendMediaRequest,
+    SendVoiceRequest,
     SendMessageResponse,
     SendMediaResponse,
+    SendVoiceResponse,
     EditMessageRequest,
     EditMessageResponse,
     DeleteMessagesRequest,
@@ -1532,6 +1534,43 @@ async def send_media(request: SendMediaRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке медиа: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-voice",
+    response_model=SendVoiceResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_voice(request: SendVoiceRequest):
+    """
+    Отправляет голосовое сообщение в чат.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_voice(
+            chat_identifier=request.chat_identifier,
+            voice_base64=request.voice_base64,
+            file_name=request.file_name,
+            caption=request.caption,
+        )
+        return SendVoiceResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке голосового сообщения: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

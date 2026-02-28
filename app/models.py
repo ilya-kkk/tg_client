@@ -156,6 +156,39 @@ class SendMediaResponse(BaseModel):
     message: str
 
 
+class SendVoiceRequest(BaseModel):
+    """Запрос на отправку голосового сообщения"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    voice_base64: str = Field(..., description="Голосовое сообщение в base64 (обычно .ogg/.opus)")
+    file_name: str = Field(..., description="Имя файла (например, voice.ogg)")
+    caption: Optional[str] = Field(None, description="Подпись к голосовому (опционально)", max_length=1024)
+
+    @field_validator("chat_identifier", "voice_base64", "file_name")
+    @classmethod
+    def validate_required_text(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Поле не может быть пустым")
+        return value
+
+    @field_validator("caption")
+    @classmethod
+    def validate_caption(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class SendVoiceResponse(BaseModel):
+    """Ответ на отправку голосового сообщения"""
+    success: bool
+    message_id: Optional[int] = None
+    chat_id: Optional[int] = None
+    date: Optional[str] = None
+    message: str
+
+
 class EditMessageRequest(BaseModel):
     """Запрос на редактирование сообщения"""
     chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
