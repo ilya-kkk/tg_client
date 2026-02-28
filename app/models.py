@@ -821,6 +821,36 @@ class InviteUsersResponse(BaseModel):
     message: str
 
 
+class RemoveUsersRequest(BaseModel):
+    """Запрос на исключение пользователей из группы/супергруппы"""
+    chat_identifier: str = Field(..., description="Username/ID группы или супергруппы")
+    user_identifiers: List[str] = Field(..., description="Список пользователей для исключения", min_length=1)
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("chat_identifier не может быть пустым")
+        return value
+
+    @field_validator("user_identifiers")
+    @classmethod
+    def validate_user_identifiers(cls, v: List[str]) -> List[str]:
+        values = [x.strip() for x in v if x and x.strip()]
+        if not values:
+            raise ValueError("user_identifiers не может быть пустым")
+        return values
+
+
+class RemoveUsersResponse(BaseModel):
+    """Ответ на исключение пользователей"""
+    success: bool
+    chat_id: Optional[int] = None
+    removed_count: int
+    message: str
+
+
 class UserStatusResponse(BaseModel):
     """Ответ со статусом пользователя"""
     success: bool

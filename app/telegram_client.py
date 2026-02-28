@@ -635,6 +635,53 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def remove_users(
+        self,
+        chat_identifier: str,
+        user_identifiers: List[str],
+    ) -> Dict[str, Any]:
+        """
+        Исключает пользователей из группы/супергруппы.
+
+        Args:
+            chat_identifier: Username/ID группы
+            user_identifiers: Пользователи для исключения
+
+        Returns:
+            Результат исключения
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            chat_entity = await self.client.get_entity(chat_identifier)
+            if isinstance(chat_entity, User):
+                raise ValueError("chat_identifier должен указывать на группу или супергруппу")
+            if isinstance(chat_entity, Channel) and bool(getattr(chat_entity, "broadcast", False)):
+                raise ValueError("Нельзя исключать пользователей из обычного канала (broadcast)")
+
+            user_entities = [await self.client.get_entity(uid) for uid in user_identifiers]
+            removed_count = 0
+            for user in user_entities:
+                await self.client.kick_participant(chat_entity, user)
+                removed_count += 1
+
+            return {
+                "success": True,
+                "chat_id": getattr(chat_entity, "id", None),
+                "removed_count": removed_count,
+                "message": "Пользователи исключены",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка исключения: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def send_message(self, chat_identifier: str, message: str) -> Dict[str, Any]:
         """

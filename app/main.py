@@ -39,6 +39,7 @@ from app.models import (
     ArchiveChatRequest,
     CreateChatRequest,
     InviteUsersRequest,
+    RemoveUsersRequest,
     ArchiveChatResponse,
     FoldersResponse,
     FolderInfo,
@@ -73,6 +74,7 @@ from app.models import (
     ChatInfoResponse,
     CreateChatResponse,
     InviteUsersResponse,
+    RemoveUsersResponse,
     UserStatusResponse,
     ManageContactResponse,
     ManageBlockResponse,
@@ -490,6 +492,41 @@ async def invite_users(request: InviteUsersRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при приглашении пользователей: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/chats/remove-users",
+    response_model=RemoveUsersResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def remove_users(request: RemoveUsersRequest):
+    """
+    Исключает пользователей из группы/супергруппы.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.remove_users(
+            chat_identifier=request.chat_identifier,
+            user_identifiers=request.user_identifiers,
+        )
+        return RemoveUsersResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при исключении пользователей: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
