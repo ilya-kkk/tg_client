@@ -14,9 +14,11 @@ from app.models import (
     SendMessageRequest,
     SendMediaRequest,
     SendVoiceRequest,
+    SendStickerGifRequest,
     SendMessageResponse,
     SendMediaResponse,
     SendVoiceResponse,
+    SendStickerGifResponse,
     EditMessageRequest,
     EditMessageResponse,
     DeleteMessagesRequest,
@@ -1571,6 +1573,45 @@ async def send_voice(request: SendVoiceRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке голосового сообщения: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-sticker-gif",
+    response_model=SendStickerGifResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_sticker_gif(request: SendStickerGifRequest):
+    """
+    Отправляет стикер или GIF в чат.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_sticker_gif(
+            chat_identifier=request.chat_identifier,
+            media_kind=request.media_kind,
+            file_base64=request.file_base64,
+            file_name=request.file_name,
+            emoji=request.emoji,
+            caption=request.caption,
+        )
+        return SendStickerGifResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке стикера/GIF: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

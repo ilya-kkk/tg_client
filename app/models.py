@@ -189,6 +189,49 @@ class SendVoiceResponse(BaseModel):
     message: str
 
 
+class SendStickerGifRequest(BaseModel):
+    """Запрос на отправку стикера или GIF"""
+    chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
+    media_kind: str = Field(..., description="Тип медиа: sticker или gif")
+    file_base64: str = Field(..., description="Файл в base64")
+    file_name: str = Field(..., description="Имя файла (например, sticker.webp или animation.gif)")
+    emoji: Optional[str] = Field(None, description="Emoji для стикера (опционально)", max_length=16)
+    caption: Optional[str] = Field(None, description="Подпись (обычно для gif)", max_length=1024)
+
+    @field_validator("chat_identifier", "file_base64", "file_name")
+    @classmethod
+    def validate_required_text(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Поле не может быть пустым")
+        return value
+
+    @field_validator("media_kind")
+    @classmethod
+    def validate_media_kind(cls, v: str) -> str:
+        value = v.strip().lower()
+        if value not in {"sticker", "gif"}:
+            raise ValueError("media_kind должен быть 'sticker' или 'gif'")
+        return value
+
+    @field_validator("emoji", "caption")
+    @classmethod
+    def validate_optional_text(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class SendStickerGifResponse(BaseModel):
+    """Ответ на отправку стикера/GIF"""
+    success: bool
+    message_id: Optional[int] = None
+    chat_id: Optional[int] = None
+    date: Optional[str] = None
+    message: str
+
+
 class EditMessageRequest(BaseModel):
     """Запрос на редактирование сообщения"""
     chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")

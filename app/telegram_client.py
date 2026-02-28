@@ -1063,6 +1063,82 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def send_sticker_gif(
+        self,
+        chat_identifier: str,
+        media_kind: str,
+        file_base64: str,
+        file_name: str,
+        emoji: Optional[str] = None,
+        caption: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Отправляет стикер или GIF в чат.
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        kind = media_kind.strip().lower()
+        if kind not in {"sticker", "gif"}:
+            raise ValueError("media_kind должен быть 'sticker' или 'gif'")
+
+        try:
+            b64_value = file_base64.strip()
+            if b64_value.startswith("data:") and "," in b64_value:
+                b64_value = b64_value.split(",", 1)[1]
+
+            file_bytes = base64.b64decode(b64_value, validate=True)
+            if not file_bytes:
+                raise ValueError("Пустые данные файла")
+
+            uploaded = await self.client.upload_file(file_bytes, file_name=file_name.strip())
+
+            send_kwargs: Dict[str, Any] = {
+                "caption": caption or None,
+                "force_document": False,
+            }
+            if kind == "sticker":
+                send_kwargs["attributes"] = [
+                    types.DocumentAttributeSticker(
+                        alt=emoji or "",
+                        stickerset=types.InputStickerSetEmpty(),
+                        mask=False,
+                    )
+                ]
+            elif kind == "gif":
+                send_kwargs["supports_streaming"] = True
+
+            sent_message = await self.client.send_file(chat_identifier, uploaded, **send_kwargs)
+
+            chat_id: Optional[int] = None
+            peer = getattr(sent_message, "peer_id", None)
+            if peer is not None:
+                if hasattr(peer, "channel_id"):
+                    chat_id = peer.channel_id
+                elif hasattr(peer, "chat_id"):
+                    chat_id = peer.chat_id
+                elif hasattr(peer, "user_id"):
+                    chat_id = peer.user_id
+
+            return {
+                "success": True,
+                "message_id": sent_message.id,
+                "chat_id": chat_id,
+                "date": sent_message.date.isoformat() if sent_message.date else None,
+                "message": "Стикер отправлен" if kind == "sticker" else "GIF отправлен",
+            }
+        except binascii.Error:
+            raise ValueError("Некорректный формат base64 для file_base64")
+        except ValueError as e:
+            raise ValueError(f"Ошибка отправки медиа: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def edit_message(self, chat_identifier: str, message_id: int, message: str) -> Dict[str, Any]:
         """
         Редактирует ранее отправленное сообщение в чате.
