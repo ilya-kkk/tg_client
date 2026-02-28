@@ -790,6 +790,37 @@ class CreateChatResponse(BaseModel):
     message: str
 
 
+class InviteUsersRequest(BaseModel):
+    """Запрос на приглашение пользователей в группу/канал"""
+    chat_identifier: str = Field(..., description="Username/ID группы или канала")
+    user_identifiers: List[str] = Field(..., description="Список пользователей для приглашения", min_length=1)
+    fwd_limit: int = Field(10, description="Лимит пересылаемой истории для обычной группы", ge=0, le=300)
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("chat_identifier не может быть пустым")
+        return value
+
+    @field_validator("user_identifiers")
+    @classmethod
+    def validate_user_identifiers(cls, v: List[str]) -> List[str]:
+        values = [x.strip() for x in v if x and x.strip()]
+        if not values:
+            raise ValueError("user_identifiers не может быть пустым")
+        return values
+
+
+class InviteUsersResponse(BaseModel):
+    """Ответ на приглашение пользователей"""
+    success: bool
+    chat_id: Optional[int] = None
+    invited_count: int
+    message: str
+
+
 class UserStatusResponse(BaseModel):
     """Ответ со статусом пользователя"""
     success: bool

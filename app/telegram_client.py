@@ -574,6 +574,67 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def invite_users(
+        self,
+        chat_identifier: str,
+        user_identifiers: List[str],
+        fwd_limit: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Приглашает пользователей в группу/супергруппу/канал.
+
+        Args:
+            chat_identifier: Username/ID чата
+            user_identifiers: Список пользователей для приглашения
+            fwd_limit: Лимит истории для обычной группы
+
+        Returns:
+            Результат приглашения
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            chat_entity = await self.client.get_entity(chat_identifier)
+            user_entities = [await self.client.get_input_entity(uid) for uid in user_identifiers]
+
+            if isinstance(chat_entity, Chat):
+                # Для обычных групп добавляем по одному пользователю.
+                for user in user_entities:
+                    await self.client(
+                        functions.messages.AddChatUserRequest(
+                            chat_id=chat_entity.id,
+                            user_id=user,
+                            fwd_limit=fwd_limit,
+                        )
+                    )
+            elif isinstance(chat_entity, Channel):
+                # Для супергрупп и каналов.
+                await self.client(
+                    functions.channels.InviteToChannelRequest(
+                        channel=chat_entity,
+                        users=user_entities,
+                    )
+                )
+            else:
+                raise ValueError("Указанный chat_identifier не является группой/каналом")
+
+            return {
+                "success": True,
+                "chat_id": getattr(chat_entity, "id", None),
+                "invited_count": len(user_entities),
+                "message": "Пользователи приглашены",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка приглашения: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def send_message(self, chat_identifier: str, message: str) -> Dict[str, Any]:
         """

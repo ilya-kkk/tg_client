@@ -38,6 +38,7 @@ from app.models import (
     FolderChatsRequest,
     ArchiveChatRequest,
     CreateChatRequest,
+    InviteUsersRequest,
     ArchiveChatResponse,
     FoldersResponse,
     FolderInfo,
@@ -71,6 +72,7 @@ from app.models import (
     ChatAdminsResponse,
     ChatInfoResponse,
     CreateChatResponse,
+    InviteUsersResponse,
     UserStatusResponse,
     ManageContactResponse,
     ManageBlockResponse,
@@ -452,6 +454,42 @@ async def create_chat(request: CreateChatRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при создании чата/канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/chats/invite",
+    response_model=InviteUsersResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def invite_users(request: InviteUsersRequest):
+    """
+    Приглашает пользователей в группу/супергруппу/канал.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.invite_users(
+            chat_identifier=request.chat_identifier,
+            user_identifiers=request.user_identifiers,
+            fwd_limit=request.fwd_limit,
+        )
+        return InviteUsersResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при приглашении пользователей: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
