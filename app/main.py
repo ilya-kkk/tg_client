@@ -46,6 +46,7 @@ from app.models import (
     MessageInfo,
     ChatDetailsInfo,
     UpdateChatInfoRequest,
+    UpdateChatPhotoRequest,
     UserInfo,
     AccountInfo,
     ContactInfo,
@@ -74,6 +75,7 @@ from app.models import (
     ChatAdminsResponse,
     ChatInfoResponse,
     UpdateChatInfoResponse,
+    UpdateChatPhotoResponse,
     CreateChatResponse,
     InviteUsersResponse,
     RemoveUsersResponse,
@@ -686,6 +688,41 @@ async def update_chat_info(request: UpdateChatInfoRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при изменении информации чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/chats/photo",
+    response_model=UpdateChatPhotoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def update_chat_photo(request: UpdateChatPhotoRequest):
+    """
+    Устанавливает фото чата.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_chat_photo(
+            chat_identifier=request.chat_identifier,
+            photo_base64=request.photo_base64,
+        )
+        return UpdateChatPhotoResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при установке фото чата: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

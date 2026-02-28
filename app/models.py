@@ -812,6 +812,35 @@ class UpdateChatInfoResponse(BaseModel):
     message: str
 
 
+class UpdateChatPhotoRequest(BaseModel):
+    """Запрос на установку фото чата"""
+    chat_identifier: str = Field(..., description="Username/ID группы, супергруппы или канала")
+    photo_base64: str = Field(..., description="Фото в base64 (можно с data URL префиксом)")
+
+    @field_validator("chat_identifier")
+    @classmethod
+    def validate_chat_identifier(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("chat_identifier не может быть пустым")
+        return value
+
+    @field_validator("photo_base64")
+    @classmethod
+    def validate_photo_base64(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("photo_base64 не может быть пустым")
+        return value
+
+
+class UpdateChatPhotoResponse(BaseModel):
+    """Ответ на установку фото чата"""
+    success: bool
+    chat_id: Optional[int] = None
+    message: str
+
+
 class CreateChatResponse(BaseModel):
     """Ответ на создание группы/канала"""
     success: bool

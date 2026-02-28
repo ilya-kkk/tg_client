@@ -567,6 +567,68 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def update_chat_photo(self, chat_identifier: str, photo_base64: str) -> Dict[str, Any]:
+        """
+        Устанавливает фото чата (группа/супергруппа/канал).
+
+        Args:
+            chat_identifier: Username/ID чата
+            photo_base64: Фото в base64
+
+        Returns:
+            Результат установки фото
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+
+            b64_value = photo_base64.strip()
+            if b64_value.startswith("data:") and "," in b64_value:
+                b64_value = b64_value.split(",", 1)[1]
+
+            photo_bytes = base64.b64decode(b64_value, validate=True)
+            if not photo_bytes:
+                raise ValueError("Пустые данные фото")
+
+            uploaded = await self.client.upload_file(photo_bytes, file_name="chat_photo.jpg")
+            input_photo = types.InputChatUploadedPhoto(file=uploaded)
+
+            if isinstance(entity, Chat):
+                await self.client(
+                    functions.messages.EditChatPhotoRequest(
+                        chat_id=entity.id,
+                        photo=input_photo,
+                    )
+                )
+            elif isinstance(entity, Channel):
+                await self.client(
+                    functions.channels.EditPhotoRequest(
+                        channel=entity,
+                        photo=input_photo,
+                    )
+                )
+            else:
+                raise ValueError("Указанный chat_identifier не является группой/каналом")
+
+            return {
+                "success": True,
+                "chat_id": getattr(entity, "id", None),
+                "message": "Фото чата обновлено",
+            }
+        except binascii.Error:
+            raise ValueError("Некорректный формат base64 для photo_base64")
+        except ValueError as e:
+            raise ValueError(f"Ошибка обновления фото чата: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def create_chat(
         self,
         type: str,
