@@ -40,6 +40,7 @@ from app.models import (
     CreateChatRequest,
     InviteUsersRequest,
     RemoveUsersRequest,
+    UpdateParticipantPermissionsRequest,
     ArchiveChatResponse,
     FoldersResponse,
     FolderInfo,
@@ -79,6 +80,7 @@ from app.models import (
     CreateChatResponse,
     InviteUsersResponse,
     RemoveUsersResponse,
+    UpdateParticipantPermissionsResponse,
     UserStatusResponse,
     ManageContactResponse,
     ManageBlockResponse,
@@ -531,6 +533,43 @@ async def remove_users(request: RemoveUsersRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при исключении пользователей: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/chats/participants/permissions",
+    response_model=UpdateParticipantPermissionsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def update_participant_permissions(request: UpdateParticipantPermissionsRequest):
+    """
+    Изменяет права участника в супергруппе (mute/unmute).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_participant_permissions(
+            chat_identifier=request.chat_identifier,
+            user_identifier=request.user_identifier,
+            mute=request.mute,
+            until_date=request.until_date,
+        )
+        return UpdateParticipantPermissionsResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении прав участника: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"

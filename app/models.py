@@ -912,6 +912,43 @@ class RemoveUsersResponse(BaseModel):
     message: str
 
 
+class UpdateParticipantPermissionsRequest(BaseModel):
+    """Запрос на изменение прав участника (mute/unmute)"""
+    chat_identifier: str = Field(..., description="Username/ID супергруппы")
+    user_identifier: str = Field(..., description="Username/ID пользователя")
+    mute: bool = Field(..., description="True: ограничить отправку сообщений, False: снять ограничения")
+    until_date: Optional[str] = Field(
+        None,
+        description="Дата окончания ограничения в ISO-формате (например, 2026-12-31T23:59:59). Если не указана, ограничения бессрочные.",
+    )
+
+    @field_validator("chat_identifier", "user_identifier")
+    @classmethod
+    def validate_identifiers(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Идентификатор не может быть пустым")
+        return value
+
+    @field_validator("until_date")
+    @classmethod
+    def validate_until_date(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class UpdateParticipantPermissionsResponse(BaseModel):
+    """Ответ на изменение прав участника"""
+    success: bool
+    chat_id: Optional[int] = None
+    user_id: Optional[int] = None
+    muted: bool
+    until_date: Optional[str] = None
+    message: str
+
+
 class UserStatusResponse(BaseModel):
     """Ответ со статусом пользователя"""
     success: bool

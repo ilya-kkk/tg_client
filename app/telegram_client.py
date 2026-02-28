@@ -816,7 +816,84 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
-    
+
+    async def update_participant_permissions(
+        self,
+        chat_identifier: str,
+        user_identifier: str,
+        mute: bool,
+        until_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Изменяет права участника в супергруппе (mute/unmute).
+
+        Args:
+            chat_identifier: Username/ID супергруппы
+            user_identifier: Username/ID пользователя
+            mute: True - ограничить отправку сообщений, False - снять ограничения
+            until_date: Дата окончания ограничения в ISO-формате (опционально)
+
+        Returns:
+            Результат изменения прав
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            chat_entity = await self.client.get_entity(chat_identifier)
+            if not isinstance(chat_entity, Channel) or not bool(getattr(chat_entity, "megagroup", False)):
+                raise ValueError("Изменение прав поддерживается только для супергрупп")
+
+            user_entity = await self.client.get_entity(user_identifier)
+            until_dt: Optional[datetime] = None
+            if until_date:
+                raw_value = until_date.replace("Z", "+00:00")
+                try:
+                    until_dt = datetime.fromisoformat(raw_value)
+                except ValueError:
+                    raise ValueError("until_date должен быть в ISO-формате")
+
+            banned_rights = types.ChatBannedRights(
+                until_date=until_dt,
+                send_messages=mute,
+                send_media=mute,
+                send_stickers=mute,
+                send_gifs=mute,
+                send_games=mute,
+                send_inline=mute,
+                embed_links=mute,
+                send_polls=mute,
+                change_info=mute,
+                invite_users=mute,
+                pin_messages=mute,
+            )
+
+            await self.client(
+                functions.channels.EditBannedRequest(
+                    channel=chat_entity,
+                    participant=user_entity,
+                    banned_rights=banned_rights,
+                )
+            )
+
+            return {
+                "success": True,
+                "chat_id": getattr(chat_entity, "id", None),
+                "user_id": getattr(user_entity, "id", None),
+                "muted": mute,
+                "until_date": until_dt.isoformat() if until_dt else None,
+                "message": "Права участника обновлены",
+            }
+        except ValueError as e:
+            raise ValueError(f"Ошибка изменения прав участника: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def send_message(self, chat_identifier: str, message: str) -> Dict[str, Any]:
         """
         Отправляет сообщение в чат.
