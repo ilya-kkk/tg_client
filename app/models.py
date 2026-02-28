@@ -69,6 +69,22 @@ class ChatInfo(BaseModel):
     is_fake: bool = False
 
 
+class ChatDetailsInfo(BaseModel):
+    """Расширенная информация о чате"""
+    id: int
+    type: str
+    name: str
+    username: Optional[str] = None
+    description: Optional[str] = None
+    participants_count: Optional[int] = None
+    has_photo: bool = False
+    is_verified: bool = False
+    is_scam: bool = False
+    is_fake: bool = False
+    is_megagroup: Optional[bool] = None
+    is_broadcast: Optional[bool] = None
+
+
 class ChatsResponse(BaseModel):
     """Ответ со списком чатов"""
     success: bool
@@ -715,6 +731,12 @@ class ChatAdminsResponse(BaseModel):
     chat_name: Optional[str] = None
     admins: List[ParticipantInfo]
     total: int
+
+
+class ChatInfoResponse(BaseModel):
+    """Ответ с расширенной информацией о чате"""
+    success: bool
+    chat: ChatDetailsInfo
 
 
 class UserStatusResponse(BaseModel):

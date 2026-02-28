@@ -416,6 +416,84 @@ class TelegramClientManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def get_chat_info(self, chat_identifier: str) -> Dict[str, Any]:
+        """
+        Получает расширенную информацию о чате/группе/канале.
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+
+        Returns:
+            Словарь с деталями чата
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(chat_identifier)
+
+            chat_type = "unknown"
+            name = "Chat"
+            username: Optional[str] = None
+            description: Optional[str] = None
+            participants_count: Optional[int] = None
+            has_photo = bool(getattr(entity, "photo", None))
+            is_verified = bool(getattr(entity, "verified", False))
+            is_scam = bool(getattr(entity, "scam", False))
+            is_fake = bool(getattr(entity, "fake", False))
+            is_megagroup: Optional[bool] = None
+            is_broadcast: Optional[bool] = None
+
+            if isinstance(entity, User):
+                chat_type = "user"
+                name = " ".join(x for x in [entity.first_name, entity.last_name] if x).strip() or "User"
+                username = entity.username
+                description = None
+            elif isinstance(entity, Channel):
+                chat_type = "channel" if entity.broadcast else "supergroup"
+                name = getattr(entity, "title", None) or "Channel"
+                username = entity.username
+                is_megagroup = bool(getattr(entity, "megagroup", False))
+                is_broadcast = bool(getattr(entity, "broadcast", False))
+
+                full = await self.client(functions.channels.GetFullChannelRequest(channel=entity))
+                full_chat = getattr(full, "full_chat", None)
+                if full_chat is not None:
+                    description = getattr(full_chat, "about", None)
+                    participants_count = getattr(full_chat, "participants_count", None)
+            elif isinstance(entity, Chat):
+                chat_type = "group"
+                name = getattr(entity, "title", None) or "Group"
+                full = await self.client(functions.messages.GetFullChatRequest(chat_id=entity.id))
+                full_chat = getattr(full, "full_chat", None)
+                if full_chat is not None:
+                    description = getattr(full_chat, "about", None)
+                    participants_count = getattr(full_chat, "participants_count", None)
+
+            return {
+                "id": getattr(entity, "id", 0),
+                "type": chat_type,
+                "name": name,
+                "username": username,
+                "description": description,
+                "participants_count": participants_count,
+                "has_photo": has_photo,
+                "is_verified": is_verified,
+                "is_scam": is_scam,
+                "is_fake": is_fake,
+                "is_megagroup": is_megagroup,
+                "is_broadcast": is_broadcast,
+            }
+        except ValueError as e:
+            raise ValueError(f"Чат не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
     
     async def send_message(self, chat_identifier: str, message: str) -> Dict[str, Any]:
         """
