@@ -928,6 +928,73 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def send_media(
+        self,
+        chat_identifier: str,
+        file_base64: str,
+        file_name: str,
+        caption: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Отправляет медиафайл в чат (фото/видео/аудио/документ).
+
+        Args:
+            chat_identifier: Username чата (например, @username) или ID чата
+            file_base64: Файл в base64 (можно data URL)
+            file_name: Имя файла с расширением
+            caption: Подпись к медиа
+
+        Returns:
+            Информация об отправленном сообщении
+        """
+        if not self.client:
+            await self.init_client()
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            b64_value = file_base64.strip()
+            if b64_value.startswith("data:") and "," in b64_value:
+                b64_value = b64_value.split(",", 1)[1]
+
+            file_bytes = base64.b64decode(b64_value, validate=True)
+            if not file_bytes:
+                raise ValueError("Пустые данные файла")
+
+            uploaded = await self.client.upload_file(file_bytes, file_name=file_name.strip())
+            sent_message = await self.client.send_file(
+                chat_identifier,
+                uploaded,
+                caption=caption or None,
+            )
+
+            chat_id: Optional[int] = None
+            peer = getattr(sent_message, "peer_id", None)
+            if peer is not None:
+                if hasattr(peer, "channel_id"):
+                    chat_id = peer.channel_id
+                elif hasattr(peer, "chat_id"):
+                    chat_id = peer.chat_id
+                elif hasattr(peer, "user_id"):
+                    chat_id = peer.user_id
+
+            return {
+                "success": True,
+                "message_id": sent_message.id,
+                "chat_id": chat_id,
+                "date": sent_message.date.isoformat() if sent_message.date else None,
+                "message": "Медиафайл отправлен",
+            }
+        except binascii.Error:
+            raise ValueError("Некорректный формат base64 для file_base64")
+        except ValueError as e:
+            raise ValueError(f"Ошибка отправки медиа: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def edit_message(self, chat_identifier: str, message_id: int, message: str) -> Dict[str, Any]:
         """
         Редактирует ранее отправленное сообщение в чате.

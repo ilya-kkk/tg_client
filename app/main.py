@@ -12,7 +12,9 @@ from app.models import (
     PasswordResponse,
     ChatsResponse,
     SendMessageRequest,
+    SendMediaRequest,
     SendMessageResponse,
+    SendMediaResponse,
     EditMessageRequest,
     EditMessageResponse,
     DeleteMessagesRequest,
@@ -1493,6 +1495,43 @@ async def send_message(request: SendMessageRequest):
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке сообщения: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-media",
+    response_model=SendMediaResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_media(request: SendMediaRequest):
+    """
+    Отправляет медиафайл в чат (фото/видео/аудио/документ).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_media(
+            chat_identifier=request.chat_identifier,
+            file_base64=request.file_base64,
+            file_name=request.file_name,
+            caption=request.caption,
+        )
+        return SendMediaResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке медиа: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
