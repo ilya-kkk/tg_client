@@ -1,7 +1,7 @@
 ## Мультисессионный рефакторинг с Supabase
 
 ### 1. Инфраструктура Supabase
-- **Создать таблицу `telegram_sessions` в Supabase**
+- ✅ **Создать таблицу `telegram_sessions` в Supabase**
   - Поля: `session_id`, `phone`, `string_session`, `phone_code_hash`, `is_authorized`, `created_at`, `updated_at`.
   - Включить RLS, по необходимости добавить политики.
 - **Проверить/настроить Supabase-переменные окружения**
