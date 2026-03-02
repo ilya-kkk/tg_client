@@ -1,0 +1,22 @@
+import type { ReactNode } from "react";
+import Link from "next/link";
+
+export default function DashboardLayout({ children }: { children: ReactNode }) {
+  return (
+    <div className="app-layout">
+      <aside className="sidebar">
+        <h2 className="sidebar-title">Меню</h2>
+        <nav className="sidebar-nav">
+          <Link href="/home" className="nav-link">
+            Домашняя
+          </Link>
+          <Link href="/add-account" className="nav-link">
+            Добавить аккаунт
+          </Link>
+        </nav>
+      </aside>
+      <main className="main-content">{children}</main>
+    </div>
+  );
+}
+

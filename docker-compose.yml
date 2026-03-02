@@ -13,6 +13,17 @@ services:
     networks:
       - app-network
 
+  logic_api:
+    build: ./Logic
+    container_name: tg_logic_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "9000:8000"
+    networks:
+      - app-network
+
 
   n8n:
     image: n8nio/n8n:latest
