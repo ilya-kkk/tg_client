@@ -13,7 +13,7 @@
 - [x] **Создать модуль `app/supabase_client.py`**
   - [x] Инициализировать Supabase-клиент (используя `SUPABASE_URL` и `SUPABASE_KEY`).
 - [x] **Реализовать `SessionRepo`**
-  - `get(session_id)` — получить одну сессию.
+  - [x] `get(session_id)` — получить одну сессию.
   - `list_all()` — вернуть список всех сессий.
   - `upsert(session_id, ...)` — создать/обновить запись.
   - `delete(session_id)` — удалить сессию.
