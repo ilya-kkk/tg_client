@@ -1,8 +1,8 @@
 ## Страница «Аккаунты» — добавление и отображение Telegram-аккаунтов
 
 ### 1. Переименование роута и ссылки в сайдбаре
-- [ ] **Переименовать директорию** `FrontEnd/app/(dashboard)/add-account/` → `FrontEnd/app/(dashboard)/accounts/`
-- [ ] **Обновить сайдбар** `FrontEnd/app/(dashboard)/layout.tsx`
+- [x] **Переименовать директорию** `FrontEnd/app/(dashboard)/add-account/` → `FrontEnd/app/(dashboard)/accounts/`
+- [x] **Обновить сайдбар** `FrontEnd/app/(dashboard)/layout.tsx`
   - Изменить текст ссылки с «Добавить аккаунт» на «Аккаунты»
   - Изменить `href` с `/add-account` на `/accounts`
 

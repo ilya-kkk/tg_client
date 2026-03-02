@@ -10,8 +10,8 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           <Link href="/home" className="nav-link">
             Домашняя
           </Link>
-          <Link href="/add-account" className="nav-link">
-            Добавить аккаунт
+          <Link href="/accounts" className="nav-link">
+            Аккаунты
           </Link>
         </nav>
       </aside>
@@ -19,4 +19,3 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     </div>
   );
 }
-
