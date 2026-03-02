@@ -55,7 +55,7 @@
 - [x] **Инициализация в `lifespan`**
   - Создать экземпляры `SessionRepo` и `MultiSessionManager` при запуске приложения.
   - Убрать вызовы `init_client()` и проверки глобальной авторизации.
-- **Перенести все рабочие ручки под `/sessions/{session_id}`**
+- [x] **Перенести все рабочие ручки под `/sessions/{session_id}`**
   - Авторизация:
     - `POST /sessions/{session_id}/auth/login` — отправка кода.
     - `POST /sessions/{session_id}/auth/verify` — подтверждение кода.

@@ -99,6 +99,10 @@ from app.models import (
     PublishChannelPostResponse,
     EditChannelPostResponse,
     DeleteChannelPostsResponse,
+    SessionInfo,
+    SessionListResponse,
+    SessionStatusResponse,
+    DeleteSessionResponse,
 )
 from app.supabase_client import SessionRepo
 from app.telegram_client import MultiSessionManager
@@ -187,13 +191,135 @@ async def root():
     }
 
 
+@app.middleware("http")
+async def bind_session_context(request, call_next):
+    """Привязывает session_id из URL к текущему запросу."""
+    if client_manager is None:
+        return await call_next(request)
+
+    original_session_id = client_manager.default_session_id
+    path_parts = request.url.path.strip("/").split("/")
+    if len(path_parts) >= 2 and path_parts[0] == "sessions" and path_parts[1]:
+        client_manager.default_session_id = path_parts[1]
+
+    try:
+        return await call_next(request)
+    finally:
+        client_manager.default_session_id = original_session_id
+
+
+@app.get(
+    "/sessions",
+    response_model=SessionListResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["auth"],
+)
+async def list_sessions():
+    """Возвращает список сохраненных сессий."""
+    if session_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SessionRepo не инициализирован",
+        )
+    try:
+        rows = session_repo.list_all()
+        sessions = [SessionInfo(**row) for row in rows]
+        return SessionListResponse(success=True, sessions=sessions, total=len(sessions))
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка сессий: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/sessions/{session_id}",
+    response_model=SessionStatusResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["auth"],
+)
+async def get_session_status(session_id: str):
+    """Возвращает статус конкретной сессии."""
+    if session_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SessionRepo не инициализирован",
+        )
+    try:
+        row = session_repo.get(session_id)
+        if row is None:
+            return SessionStatusResponse(
+                success=False,
+                session=None,
+                message=f"Сессия '{session_id}' не найдена",
+            )
+        return SessionStatusResponse(
+            success=True,
+            session=SessionInfo(**row),
+            message="Сессия найдена",
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении статуса сессии: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.delete(
+    "/sessions/{session_id}",
+    response_model=DeleteSessionResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["auth"],
+)
+async def delete_session(session_id: str):
+    """Удаляет сессию по session_id."""
+    if session_repo is None or client_manager is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис сессий не инициализирован",
+        )
+    try:
+        cached_client = client_manager._clients.pop(session_id, None)
+        if cached_client is not None:
+            await cached_client.disconnect()
+
+        auth_client = client_manager._auth_clients.pop(session_id, None)
+        if auth_client is not None:
+            await auth_client.disconnect()
+
+        client_manager._authorized_sessions.discard(session_id)
+        client_manager._auth_state.pop(session_id, None)
+
+        deleted = session_repo.delete(session_id)
+        if not deleted:
+            return DeleteSessionResponse(
+                success=False,
+                session_id=session_id,
+                message=f"Сессия '{session_id}' не найдена",
+            )
+
+        return DeleteSessionResponse(
+            success=True,
+            session_id=session_id,
+            message="Сессия удалена",
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сессии: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
 @app.post(
-    "/auth/login",
+    "/sessions/{session_id}/auth/login",
     response_model=LoginResponse,
     status_code=status.HTTP_200_OK,
     tags=["auth"],
 )
-async def login(request: LoginRequest):
+async def login(session_id: str, request: LoginRequest):
     """
     Отправляет код подтверждения на номер телефона.
     
@@ -201,7 +327,11 @@ async def login(request: LoginRequest):
     Код придет в приложение Telegram или по SMS (если указан force_sms=true).
     """
     try:
-        result = await client_manager.send_code(request.phone, force_sms=request.force_sms)
+        result = await client_manager.send_code(
+            session_id=session_id,
+            phone=request.phone,
+            force_sms=request.force_sms,
+        )
         return LoginResponse(**result)
     except ValueError as e:
         raise HTTPException(
@@ -217,12 +347,12 @@ async def login(request: LoginRequest):
 
 
 @app.post(
-    "/auth/verify",
+    "/sessions/{session_id}/auth/verify",
     response_model=VerifyResponse,
     status_code=status.HTTP_200_OK,
     tags=["auth"],
 )
-async def verify(request: VerifyRequest):
+async def verify(session_id: str, request: VerifyRequest):
     """
     Подтверждает код авторизации.
     
@@ -230,7 +360,11 @@ async def verify(request: VerifyRequest):
     В этом случае используйте /auth/password для завершения авторизации.
     """
     try:
-        result = await client_manager.sign_in(request.phone, request.code)
+        result = await client_manager.sign_in(
+            session_id=session_id,
+            phone=request.phone,
+            code=request.code,
+        )
         return VerifyResponse(**result)
     except ValueError as e:
         raise HTTPException(
@@ -246,19 +380,22 @@ async def verify(request: VerifyRequest):
 
 
 @app.post(
-    "/auth/password",
+    "/sessions/{session_id}/auth/password",
     response_model=PasswordResponse,
     status_code=status.HTTP_200_OK,
     tags=["auth"],
 )
-async def password(request: PasswordRequest):
+async def password(session_id: str, request: PasswordRequest):
     """
     Вводит пароль двухфакторной аутентификации.
     
     Используйте этот endpoint только после того, как /auth/verify вернул password_required=true.
     """
     try:
-        result = await client_manager.sign_in_password(request.password)
+        result = await client_manager.sign_in_password(
+            session_id=session_id,
+            password=request.password,
+        )
         return PasswordResponse(**result)
     except ValueError as e:
         raise HTTPException(
@@ -274,12 +411,12 @@ async def password(request: PasswordRequest):
 
 
 @app.get(
-    "/chats",
+    "/sessions/{session_id}/chats",
     response_model=ChatsResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def get_chats(limit: int = 100):
+async def get_chats(session_id: str, limit: int = 100):
     """
     Получает список всех диалогов (чатов).
     
@@ -288,7 +425,7 @@ async def get_chats(limit: int = 100):
     Args:
         limit: Максимальное количество чатов (по умолчанию 100)
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -317,19 +454,19 @@ async def get_chats(limit: int = 100):
 
 
 @app.get(
-    "/chats/folders",
+    "/sessions/{session_id}/chats/folders",
     response_model=FoldersResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def get_folders():
+async def get_folders(session_id: str):
     """
     Получает список всех доступных папок (dialog filters).
     
     Используйте этот endpoint, чтобы узнать названия ваших папок,
     а затем используйте /chats/folder для получения чатов из конкретной папки.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -358,12 +495,12 @@ async def get_folders():
 
 
 @app.post(
-    "/chats/folder",
+    "/sessions/{session_id}/chats/folder",
     response_model=ChatsResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def get_chats_by_folder(request: FolderChatsRequest):
+async def get_chats_by_folder(session_id: str, request: FolderChatsRequest):
     """
     Получает список чатов из указанной папки.
     
@@ -382,7 +519,7 @@ async def get_chats_by_folder(request: FolderChatsRequest):
     - "1"
     - и другие папки, созданные пользователем
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -414,16 +551,16 @@ async def get_chats_by_folder(request: FolderChatsRequest):
 
 
 @app.post(
-    "/chats/archive",
+    "/sessions/{session_id}/chats/archive",
     response_model=ArchiveChatResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def archive_chat(request: ArchiveChatRequest):
+async def archive_chat(session_id: str, request: ArchiveChatRequest):
     """
     Архивирует чат или возвращает его из архива.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -449,16 +586,16 @@ async def archive_chat(request: ArchiveChatRequest):
 
 
 @app.post(
-    "/chats/create",
+    "/sessions/{session_id}/chats/create",
     response_model=CreateChatResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def create_chat(request: CreateChatRequest):
+async def create_chat(session_id: str, request: CreateChatRequest):
     """
     Создает новую группу или канал.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -486,16 +623,16 @@ async def create_chat(request: CreateChatRequest):
 
 
 @app.post(
-    "/chats/invite",
+    "/sessions/{session_id}/chats/invite",
     response_model=InviteUsersResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def invite_users(request: InviteUsersRequest):
+async def invite_users(session_id: str, request: InviteUsersRequest):
     """
     Приглашает пользователей в группу/супергруппу/канал.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -522,16 +659,16 @@ async def invite_users(request: InviteUsersRequest):
 
 
 @app.post(
-    "/chats/remove-users",
+    "/sessions/{session_id}/chats/remove-users",
     response_model=RemoveUsersResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def remove_users(request: RemoveUsersRequest):
+async def remove_users(session_id: str, request: RemoveUsersRequest):
     """
     Исключает пользователей из группы/супергруппы.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -557,16 +694,16 @@ async def remove_users(request: RemoveUsersRequest):
 
 
 @app.patch(
-    "/chats/participants/permissions",
+    "/sessions/{session_id}/chats/participants/permissions",
     response_model=UpdateParticipantPermissionsResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def update_participant_permissions(request: UpdateParticipantPermissionsRequest):
+async def update_participant_permissions(session_id: str, request: UpdateParticipantPermissionsRequest):
     """
     Изменяет права участника в супергруппе (mute/unmute).
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -594,16 +731,16 @@ async def update_participant_permissions(request: UpdateParticipantPermissionsRe
 
 
 @app.get(
-    "/chats/participants",
+    "/sessions/{session_id}/chats/participants",
     response_model=ChatParticipantsResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def get_chat_participants(chat_identifier: str, limit: int = 100, search: str = ""):
+async def get_chat_participants(session_id: str, chat_identifier: str, limit: int = 100, search: str = ""):
     """
     Получает участников группы/супергруппы/канала.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -637,16 +774,16 @@ async def get_chat_participants(chat_identifier: str, limit: int = 100, search: 
 
 
 @app.get(
-    "/chats/admins",
+    "/sessions/{session_id}/chats/admins",
     response_model=ChatAdminsResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def get_chat_admins(chat_identifier: str, limit: int = 100, search: str = ""):
+async def get_chat_admins(session_id: str, chat_identifier: str, limit: int = 100, search: str = ""):
     """
     Получает список администраторов группы/супергруппы/канала.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -680,16 +817,16 @@ async def get_chat_admins(chat_identifier: str, limit: int = 100, search: str = 
 
 
 @app.get(
-    "/chats/info",
+    "/sessions/{session_id}/chats/info",
     response_model=ChatInfoResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def get_chat_info(chat_identifier: str):
+async def get_chat_info(session_id: str, chat_identifier: str):
     """
     Получает расширенную информацию о чате: описание, фото и базовые настройки.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -715,16 +852,16 @@ async def get_chat_info(chat_identifier: str):
 
 
 @app.patch(
-    "/chats/info",
+    "/sessions/{session_id}/chats/info",
     response_model=UpdateChatInfoResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def update_chat_info(request: UpdateChatInfoRequest):
+async def update_chat_info(session_id: str, request: UpdateChatInfoRequest):
     """
     Изменяет название и/или описание чата.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -751,16 +888,16 @@ async def update_chat_info(request: UpdateChatInfoRequest):
 
 
 @app.patch(
-    "/chats/photo",
+    "/sessions/{session_id}/chats/photo",
     response_model=UpdateChatPhotoResponse,
     status_code=status.HTTP_200_OK,
     tags=["chats"],
 )
-async def update_chat_photo(request: UpdateChatPhotoRequest):
+async def update_chat_photo(session_id: str, request: UpdateChatPhotoRequest):
     """
     Устанавливает фото чата.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -786,16 +923,16 @@ async def update_chat_photo(request: UpdateChatPhotoRequest):
 
 
 @app.get(
-    "/users/info",
+    "/sessions/{session_id}/users/info",
     response_model=UserInfoResponse,
     status_code=status.HTTP_200_OK,
     tags=["users"],
 )
-async def get_user_info(user_identifier: str):
+async def get_user_info(session_id: str, user_identifier: str):
     """
     Получает информацию о пользователе Telegram по username, ID или телефону.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -821,16 +958,16 @@ async def get_user_info(user_identifier: str):
 
 
 @app.get(
-    "/users/contacts",
+    "/sessions/{session_id}/users/contacts",
     response_model=ContactsResponse,
     status_code=status.HTTP_200_OK,
     tags=["users"],
 )
-async def get_contacts(limit: int = 200):
+async def get_contacts(session_id: str, limit: int = 200):
     """
     Получает список контактов текущего аккаунта.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -858,16 +995,16 @@ async def get_contacts(limit: int = 200):
 
 
 @app.post(
-    "/users/contacts/manage",
+    "/sessions/{session_id}/users/contacts/manage",
     response_model=ManageContactResponse,
     status_code=status.HTTP_200_OK,
     tags=["users"],
 )
-async def manage_contact(request: ManageContactRequest):
+async def manage_contact(session_id: str, request: ManageContactRequest):
     """
     Добавляет или удаляет контакт.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -896,16 +1033,16 @@ async def manage_contact(request: ManageContactRequest):
 
 
 @app.post(
-    "/users/block",
+    "/sessions/{session_id}/users/block",
     response_model=ManageBlockResponse,
     status_code=status.HTTP_200_OK,
     tags=["users"],
 )
-async def manage_block(request: ManageBlockRequest):
+async def manage_block(session_id: str, request: ManageBlockRequest):
     """
     Блокирует или разблокирует пользователя.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -931,16 +1068,16 @@ async def manage_block(request: ManageBlockRequest):
 
 
 @app.post(
-    "/bots/command",
+    "/sessions/{session_id}/bots/command",
     response_model=SendBotCommandResponse,
     status_code=status.HTTP_200_OK,
     tags=["bots"],
 )
-async def send_bot_command(request: SendBotCommandRequest):
+async def send_bot_command(session_id: str, request: SendBotCommandRequest):
     """
     Отправляет команду боту (например, /start).
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -966,16 +1103,16 @@ async def send_bot_command(request: SendBotCommandRequest):
 
 
 @app.post(
-    "/bots/buttons/click",
+    "/sessions/{session_id}/bots/buttons/click",
     response_model=BotInlineButtonClickResponse,
     status_code=status.HTTP_200_OK,
     tags=["bots"],
 )
-async def click_bot_inline_button(request: BotInlineButtonClickRequest):
+async def click_bot_inline_button(session_id: str, request: BotInlineButtonClickRequest):
     """
     Нажимает inline-кнопку в сообщении бота.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1003,16 +1140,16 @@ async def click_bot_inline_button(request: BotInlineButtonClickRequest):
 
 
 @app.get(
-    "/users/status",
+    "/sessions/{session_id}/users/status",
     response_model=UserStatusResponse,
     status_code=status.HTTP_200_OK,
     tags=["users"],
 )
-async def get_user_status(user_identifier: str):
+async def get_user_status(session_id: str, user_identifier: str):
     """
     Получает текущий статус пользователя (онлайн/оффлайн и др.).
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1038,16 +1175,16 @@ async def get_user_status(user_identifier: str):
 
 
 @app.get(
-    "/account/me",
+    "/sessions/{session_id}/account/me",
     response_model=AccountInfoResponse,
     status_code=status.HTTP_200_OK,
     tags=["account"],
 )
-async def get_account_me():
+async def get_account_me(session_id: str):
     """
     Получает информацию о текущем авторизованном аккаунте.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1073,16 +1210,16 @@ async def get_account_me():
 
 
 @app.patch(
-    "/account/username",
+    "/sessions/{session_id}/account/username",
     response_model=UpdateUsernameResponse,
     status_code=status.HTTP_200_OK,
     tags=["account"],
 )
-async def update_account_username(request: UpdateUsernameRequest):
+async def update_account_username(session_id: str, request: UpdateUsernameRequest):
     """
     Изменяет username текущего аккаунта.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1105,16 +1242,16 @@ async def update_account_username(request: UpdateUsernameRequest):
 
 
 @app.patch(
-    "/account/name",
+    "/sessions/{session_id}/account/name",
     response_model=UpdateNameResponse,
     status_code=status.HTTP_200_OK,
     tags=["account"],
 )
-async def update_account_name(request: UpdateNameRequest):
+async def update_account_name(session_id: str, request: UpdateNameRequest):
     """
     Изменяет имя и фамилию текущего аккаунта.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1140,16 +1277,16 @@ async def update_account_name(request: UpdateNameRequest):
 
 
 @app.patch(
-    "/account/about",
+    "/sessions/{session_id}/account/about",
     response_model=UpdateAboutResponse,
     status_code=status.HTTP_200_OK,
     tags=["account"],
 )
-async def update_account_about(request: UpdateAboutRequest):
+async def update_account_about(session_id: str, request: UpdateAboutRequest):
     """
     Изменяет биографию (about) текущего аккаунта.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1172,16 +1309,16 @@ async def update_account_about(request: UpdateAboutRequest):
 
 
 @app.patch(
-    "/account/photo",
+    "/sessions/{session_id}/account/photo",
     response_model=UpdateProfilePhotoResponse,
     status_code=status.HTTP_200_OK,
     tags=["account"],
 )
-async def update_account_photo(request: UpdateProfilePhotoRequest):
+async def update_account_photo(session_id: str, request: UpdateProfilePhotoRequest):
     """
     Изменяет фото профиля текущего аккаунта.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1204,16 +1341,16 @@ async def update_account_photo(request: UpdateProfilePhotoRequest):
 
 
 @app.post(
-    "/account/sessions/reset",
+    "/sessions/{session_id}/account/sessions/reset",
     response_model=ResetSessionsResponse,
     status_code=status.HTTP_200_OK,
     tags=["account"],
 )
-async def reset_account_sessions():
+async def reset_account_sessions(session_id: str):
     """
     Отключает все другие устройства (сессии), кроме текущей.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1236,16 +1373,16 @@ async def reset_account_sessions():
 
 
 @app.post(
-    "/channels/subscribe",
+    "/sessions/{session_id}/channels/subscribe",
     response_model=SubscribeChannelResponse,
     status_code=status.HTTP_200_OK,
     tags=["channels"],
 )
-async def subscribe_channel(request: SubscribeChannelRequest):
+async def subscribe_channel(session_id: str, request: SubscribeChannelRequest):
     """
     Подписывает текущий аккаунт на канал.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1268,16 +1405,16 @@ async def subscribe_channel(request: SubscribeChannelRequest):
 
 
 @app.post(
-    "/channels/unsubscribe",
+    "/sessions/{session_id}/channels/unsubscribe",
     response_model=UnsubscribeChannelResponse,
     status_code=status.HTTP_200_OK,
     tags=["channels"],
 )
-async def unsubscribe_channel(request: SubscribeChannelRequest):
+async def unsubscribe_channel(session_id: str, request: SubscribeChannelRequest):
     """
     Отписывает текущий аккаунт от канала.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1300,16 +1437,16 @@ async def unsubscribe_channel(request: SubscribeChannelRequest):
 
 
 @app.get(
-    "/channels/posts",
+    "/sessions/{session_id}/channels/posts",
     response_model=MessagesResponse,
     status_code=status.HTTP_200_OK,
     tags=["channels"],
 )
-async def get_channel_posts(channel_identifier: str, limit: int = 50):
+async def get_channel_posts(session_id: str, channel_identifier: str, limit: int = 50):
     """
     Получает последние посты из канала.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1339,16 +1476,16 @@ async def get_channel_posts(channel_identifier: str, limit: int = 50):
 
 
 @app.post(
-    "/channels/posts/publish",
+    "/sessions/{session_id}/channels/posts/publish",
     response_model=PublishChannelPostResponse,
     status_code=status.HTTP_200_OK,
     tags=["channels"],
 )
-async def publish_channel_post(request: PublishChannelPostRequest):
+async def publish_channel_post(session_id: str, request: PublishChannelPostRequest):
     """
     Публикует пост в канал.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1374,16 +1511,16 @@ async def publish_channel_post(request: PublishChannelPostRequest):
 
 
 @app.patch(
-    "/channels/posts/edit",
+    "/sessions/{session_id}/channels/posts/edit",
     response_model=EditChannelPostResponse,
     status_code=status.HTTP_200_OK,
     tags=["channels"],
 )
-async def edit_channel_post(request: EditChannelPostRequest):
+async def edit_channel_post(session_id: str, request: EditChannelPostRequest):
     """
     Редактирует пост в канале.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1410,16 +1547,16 @@ async def edit_channel_post(request: EditChannelPostRequest):
 
 
 @app.delete(
-    "/channels/posts",
+    "/sessions/{session_id}/channels/posts",
     response_model=DeleteChannelPostsResponse,
     status_code=status.HTTP_200_OK,
     tags=["channels"],
 )
-async def delete_channel_posts(request: DeleteChannelPostsRequest):
+async def delete_channel_posts(session_id: str, request: DeleteChannelPostsRequest):
     """
     Удаляет один или несколько постов в канале.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1445,12 +1582,12 @@ async def delete_channel_posts(request: DeleteChannelPostsRequest):
 
 
 @app.post(
-    "/messages/send",
+    "/sessions/{session_id}/messages/send",
     response_model=SendMessageResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def send_message(request: SendMessageRequest):
+async def send_message(session_id: str, request: SendMessageRequest):
     """
     Отправляет сообщение в чат.
     
@@ -1460,7 +1597,7 @@ async def send_message(request: SendMessageRequest):
     
     message - текст сообщения (до 4096 символов).
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1486,16 +1623,16 @@ async def send_message(request: SendMessageRequest):
 
 
 @app.post(
-    "/messages/send-media",
+    "/sessions/{session_id}/messages/send-media",
     response_model=SendMediaResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def send_media(request: SendMediaRequest):
+async def send_media(session_id: str, request: SendMediaRequest):
     """
     Отправляет медиафайл в чат (фото/видео/аудио/документ).
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1523,16 +1660,16 @@ async def send_media(request: SendMediaRequest):
 
 
 @app.post(
-    "/messages/send-voice",
+    "/sessions/{session_id}/messages/send-voice",
     response_model=SendVoiceResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def send_voice(request: SendVoiceRequest):
+async def send_voice(session_id: str, request: SendVoiceRequest):
     """
     Отправляет голосовое сообщение в чат.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1560,16 +1697,16 @@ async def send_voice(request: SendVoiceRequest):
 
 
 @app.post(
-    "/messages/send-sticker-gif",
+    "/sessions/{session_id}/messages/send-sticker-gif",
     response_model=SendStickerGifResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def send_sticker_gif(request: SendStickerGifRequest):
+async def send_sticker_gif(session_id: str, request: SendStickerGifRequest):
     """
     Отправляет стикер или GIF в чат.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1599,16 +1736,16 @@ async def send_sticker_gif(request: SendStickerGifRequest):
 
 
 @app.post(
-    "/messages/send-location",
+    "/sessions/{session_id}/messages/send-location",
     response_model=SendLocationResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def send_location(request: SendLocationRequest):
+async def send_location(session_id: str, request: SendLocationRequest):
     """
     Отправляет геолокацию в чат.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1636,16 +1773,16 @@ async def send_location(request: SendLocationRequest):
 
 
 @app.post(
-    "/messages/send-contact",
+    "/sessions/{session_id}/messages/send-contact",
     response_model=SendContactMessageResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def send_contact_message(request: SendContactMessageRequest):
+async def send_contact_message(session_id: str, request: SendContactMessageRequest):
     """
     Отправляет контакт в чат.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1674,12 +1811,12 @@ async def send_contact_message(request: SendContactMessageRequest):
 
 
 @app.patch(
-    "/messages/edit",
+    "/sessions/{session_id}/messages/edit",
     response_model=EditMessageResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def edit_message(request: EditMessageRequest):
+async def edit_message(session_id: str, request: EditMessageRequest):
     """
     Редактирует ранее отправленное сообщение в чате.
 
@@ -1687,7 +1824,7 @@ async def edit_message(request: EditMessageRequest):
     - Username чата (например, @username)
     - ID чата (число)
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1714,12 +1851,12 @@ async def edit_message(request: EditMessageRequest):
 
 
 @app.delete(
-    "/messages/delete",
+    "/sessions/{session_id}/messages/delete",
     response_model=DeleteMessagesResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def delete_messages(request: DeleteMessagesRequest):
+async def delete_messages(session_id: str, request: DeleteMessagesRequest):
     """
     Удаляет одно или несколько сообщений в чате.
 
@@ -1727,7 +1864,7 @@ async def delete_messages(request: DeleteMessagesRequest):
     - True: попытка удалить сообщения для всех участников
     - False: удалить только у текущего аккаунта
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1754,19 +1891,19 @@ async def delete_messages(request: DeleteMessagesRequest):
 
 
 @app.post(
-    "/messages/forward",
+    "/sessions/{session_id}/messages/forward",
     response_model=ForwardMessagesResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def forward_messages(request: ForwardMessagesRequest):
+async def forward_messages(session_id: str, request: ForwardMessagesRequest):
     """
     Пересылает сообщения из одного чата в другой.
 
     from_chat_identifier - источник сообщений.
     to_chat_identifier - чат назначения.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1793,16 +1930,16 @@ async def forward_messages(request: ForwardMessagesRequest):
 
 
 @app.post(
-    "/messages/reply",
+    "/sessions/{session_id}/messages/reply",
     response_model=ReplyMessageResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def reply_message(request: ReplyMessageRequest):
+async def reply_message(session_id: str, request: ReplyMessageRequest):
     """
     Отправляет сообщение-ответ на конкретное сообщение в чате.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
@@ -1829,16 +1966,16 @@ async def reply_message(request: ReplyMessageRequest):
 
 
 @app.post(
-    "/messages/search",
+    "/sessions/{session_id}/messages/search",
     response_model=SearchMessagesResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def search_messages(request: SearchMessagesRequest):
+async def search_messages(session_id: str, request: SearchMessagesRequest):
     """
     Ищет сообщения в указанном чате по текстовому запросу.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
@@ -1873,16 +2010,16 @@ async def search_messages(request: SearchMessagesRequest):
 
 
 @app.post(
-    "/messages/filter",
+    "/sessions/{session_id}/messages/filter",
     response_model=FilterMessagesResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def filter_messages(request: FilterMessagesRequest):
+async def filter_messages(session_id: str, request: FilterMessagesRequest):
     """
     Фильтрует сообщения в чате по типу (text/media/photo/video/document/audio/voice/sticker/service).
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
@@ -1917,16 +2054,16 @@ async def filter_messages(request: FilterMessagesRequest):
 
 
 @app.post(
-    "/messages/read",
+    "/sessions/{session_id}/messages/read",
     response_model=MarkMessagesReadResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def mark_messages_read(request: MarkMessagesReadRequest):
+async def mark_messages_read(session_id: str, request: MarkMessagesReadRequest):
     """
     Отмечает сообщения в чате как прочитанные.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
@@ -1952,16 +2089,16 @@ async def mark_messages_read(request: MarkMessagesReadRequest):
 
 
 @app.post(
-    "/messages/pin",
+    "/sessions/{session_id}/messages/pin",
     response_model=PinMessageResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def pin_message(request: PinMessageRequest):
+async def pin_message(session_id: str, request: PinMessageRequest):
     """
     Закрепляет или открепляет сообщение в чате.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
@@ -1989,16 +2126,16 @@ async def pin_message(request: PinMessageRequest):
 
 
 @app.post(
-    "/messages/reaction",
+    "/sessions/{session_id}/messages/reaction",
     response_model=MessageReactionResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def set_message_reaction(request: MessageReactionRequest):
+async def set_message_reaction(session_id: str, request: MessageReactionRequest):
     """
     Устанавливает или снимает реакцию на сообщение.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
@@ -2026,12 +2163,12 @@ async def set_message_reaction(request: MessageReactionRequest):
 
 
 @app.get(
-    "/messages",
+    "/sessions/{session_id}/messages",
     response_model=MessagesResponse,
     status_code=status.HTTP_200_OK,
     tags=["messages"],
 )
-async def get_messages(chat_identifier: str, limit: int = 50):
+async def get_messages(session_id: str, chat_identifier: str, limit: int = 50):
     """
     Получает последние сообщения из указанного чата.
     
@@ -2041,7 +2178,7 @@ async def get_messages(chat_identifier: str, limit: int = 50):
     
     limit - максимальное количество сообщений (по умолчанию 50).
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
@@ -2072,16 +2209,16 @@ async def get_messages(chat_identifier: str, limit: int = 50):
 
 
 @app.get(
-    "/messages/media",
+    "/sessions/{session_id}/messages/media",
     tags=["messages"],
 )
-async def download_message_media(chat_identifier: str, message_id: int):
+async def download_message_media(session_id: str, chat_identifier: str, message_id: int):
     """
     Скачивает медиа по ID сообщения.
     
     Используйте media_id из ответа /messages для message_id.
     """
-    if not client_manager.is_connected():
+    if not client_manager.is_connected(session_id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
