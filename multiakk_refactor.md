@@ -32,7 +32,7 @@
     - [x] `self._clients: Dict[str, TelegramClient]` — авторизованные клиенты по `session_id`.
     - [x] `self._auth_clients: Dict[str, TelegramClient]` — временные клиенты в процессе авторизации.
   - [x] Подключить `SessionRepo` для чтения/записи сессий в Supabase.
-- **Реализовать ключевые методы мультисессий**
+- [x] **Реализовать ключевые методы мультисессий**
   - `get_client(session_id)` — получить/создать Telethon-клиент по StringSession из Supabase.
   - `send_code(session_id, phone)` — создать временный клиент, отправить код, сохранить `phone_code_hash` и `phone` в БД.
   - `sign_in(session_id, phone, code)` — завершить авторизацию, сохранить `client.session.save()` в Supabase.

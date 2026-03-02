@@ -65,6 +65,42 @@ class MultiSessionManager:
         self._auth_clients[session_id] = client
         return client
 
+    def _normalize_session_id(self, session_id: Optional[str]) -> str:
+        value = (session_id or "").strip()
+        if not value:
+            return self.default_session_id
+        return value
+
+    async def get_client(self, session_id: str) -> TelegramClient:
+        """Возвращает авторизованный клиент для session_id."""
+        sid = self._normalize_session_id(session_id)
+
+        cached = self._clients.get(sid)
+        if cached:
+            if not cached.is_connected():
+                await cached.connect()
+            if await cached.is_user_authorized():
+                self._authorized_sessions.add(sid)
+                return cached
+            self._clients.pop(sid, None)
+            self._authorized_sessions.discard(sid)
+            await cached.disconnect()
+
+        row = self._get_session_repo().get(sid) or {}
+        string_session = row.get("string_session") or ""
+        if not string_session:
+            raise ValueError(f"Сессия '{sid}' не найдена или не авторизована")
+
+        client = self._create_client(string_session)
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            raise ValueError(f"Сессия '{sid}' не авторизована")
+
+        self._clients[sid] = client
+        self._authorized_sessions.add(sid)
+        return client
+
     def _get_auth_state(self, session_id: str) -> Dict[str, str]:
         state = self._auth_state.get(session_id)
         if state is not None:
@@ -170,7 +206,12 @@ class MultiSessionManager:
         self._is_connected = False
         return False
     
-    async def send_code(self, phone: str, force_sms: bool = False) -> Dict[str, Any]:
+    async def send_code(
+        self,
+        session_id: str,
+        phone: Optional[str] = None,
+        force_sms: bool = False,
+    ) -> Dict[str, Any]:
         # Примечание: параметр force_sms игнорируется, так как Telegram больше не поддерживает эту функцию
         """
         Отправляет код подтверждения на телефон.
@@ -185,7 +226,12 @@ class MultiSessionManager:
         import logging
         logger = logging.getLogger(__name__)
         
-        session_id = self.default_session_id
+        if phone is None:
+            # Backward compatibility: send_code(phone, force_sms=...)
+            phone = session_id
+            session_id = self.default_session_id
+        session_id = self._normalize_session_id(session_id)
+        phone = phone.strip()
 
         try:
             logger.info(f"Отправка кода на номер: {phone}")
@@ -195,12 +241,13 @@ class MultiSessionManager:
 
             client = await self._ensure_auth_client(session_id)
             self._clients.pop(session_id, None)
-            self.phone = phone
+            state = self._get_auth_state(session_id)
+            state["phone"] = phone
             
             # Примечание: force_sms больше не работает в Telegram API
             # Telegram сам решает, как отправить код (обычно через приложение)
             result = await client.send_code_request(phone)
-            self.phone_code_hash = result.phone_code_hash
+            state["phone_code_hash"] = result.phone_code_hash
             self._get_session_repo().save_auth_state(
                 session_id=session_id,
                 phone=phone,
@@ -242,7 +289,12 @@ class MultiSessionManager:
             logger.error(f"Неожиданная ошибка при отправке кода: {e}", exc_info=True)
             raise ValueError(f"Ошибка при отправке кода: {str(e)}")
     
-    async def sign_in(self, phone: str, code: str) -> Dict[str, Any]:
+    async def sign_in(
+        self,
+        session_id: str,
+        phone: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Вход с кодом подтверждения.
         
@@ -253,7 +305,15 @@ class MultiSessionManager:
         Returns:
             Статус авторизации
         """
-        session_id = self.default_session_id
+        if code is None and phone is not None:
+            # Backward compatibility: sign_in(phone, code)
+            code = phone
+            phone = session_id
+            session_id = self.default_session_id
+        session_id = self._normalize_session_id(session_id)
+        if not phone or not code:
+            raise ValueError("Нужно передать phone и code")
+
         state = self._get_auth_state(session_id)
         if not state.get("phone_code_hash"):
             raise ValueError("Сначала вызовите /auth/login")
@@ -263,8 +323,8 @@ class MultiSessionManager:
             await client.sign_in(phone, code, phone_code_hash=state["phone_code_hash"])
             self._clients[session_id] = client
             self._auth_clients.pop(session_id, None)
-            self._is_connected = True
-            self.phone_code_hash = None
+            self._authorized_sessions.add(session_id)
+            state["phone_code_hash"] = ""
             self._get_session_repo().save_authorized(session_id, client.session.save())
             
             return {
@@ -282,7 +342,11 @@ class MultiSessionManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
     
-    async def sign_in_password(self, password: str) -> Dict[str, Any]:
+    async def sign_in_password(
+        self,
+        session_id: str,
+        password: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Вход с паролем двухфакторной аутентификации.
         
@@ -293,12 +357,18 @@ class MultiSessionManager:
             Статус авторизации
         """
         try:
-            session_id = self.default_session_id
+            if password is None:
+                # Backward compatibility: sign_in_password(password)
+                password = session_id
+                session_id = self.default_session_id
+            session_id = self._normalize_session_id(session_id)
+            if not password:
+                raise ValueError("Пароль не может быть пустым")
             client = await self._ensure_auth_client(session_id)
             await client.sign_in(password=password)
             self._clients[session_id] = client
             self._auth_clients.pop(session_id, None)
-            self._is_connected = True
+            self._authorized_sessions.add(session_id)
             self._get_session_repo().save_authorized(session_id, client.session.save())
             
             return {
@@ -308,7 +378,7 @@ class MultiSessionManager:
         except RPCError as e:
             raise ValueError(f"Неверный пароль или ошибка: {e.message}")
     
-    async def get_dialogs(self, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_dialogs(self, session_id: str = "default", limit: int = 100) -> List[Dict[str, Any]]:
         """
         Получает список всех диалогов (чатов).
         
@@ -318,14 +388,11 @@ class MultiSessionManager:
         Returns:
             Список словарей с информацией о чатах
         """
-        if not self.client:
-            await self.init_client()
-        
-        if not self._is_connected:
-            raise ValueError("Необходима авторизация")
+        session_id = self._normalize_session_id(session_id)
+        client = await self.get_client(session_id)
         
         dialogs = []
-        async for dialog in self.client.iter_dialogs(limit=limit):
+        async for dialog in client.iter_dialogs(limit=limit):
             chat_info = {
                 "id": dialog.id,
                 "name": dialog.name,
@@ -1018,7 +1085,12 @@ class MultiSessionManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
-    async def send_message(self, chat_identifier: str, message: str) -> Dict[str, Any]:
+    async def send_message(
+        self,
+        session_id: str = "default",
+        chat_identifier: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Отправляет сообщение в чат.
         
@@ -1029,14 +1101,18 @@ class MultiSessionManager:
         Returns:
             Информация об отправленном сообщении
         """
-        if not self.client:
-            await self.init_client()
-        
-        if not self._is_connected:
-            raise ValueError("Необходима авторизация")
+        if message is None and chat_identifier is not None:
+            # Backward compatibility: send_message(chat_identifier, message)
+            message = chat_identifier
+            chat_identifier = session_id
+            session_id = self.default_session_id
+        if not chat_identifier or message is None:
+            raise ValueError("Нужно передать chat_identifier и message")
+        session_id = self._normalize_session_id(session_id)
+        client = await self.get_client(session_id)
         
         try:
-            sent_message = await self.client.send_message(chat_identifier, message)
+            sent_message = await client.send_message(chat_identifier, message)
             
             return {
                 "success": True,
@@ -3062,9 +3138,10 @@ class MultiSessionManager:
         self._auth_clients.clear()
         self._authorized_sessions.clear()
     
-    def is_connected(self) -> bool:
-        """Проверяет, авторизован ли клиент"""
-        return self._is_connected
+    def is_connected(self, session_id: Optional[str] = None) -> bool:
+        """Проверяет, авторизована ли сессия."""
+        sid = self._normalize_session_id(session_id)
+        return sid in self._authorized_sessions
     
     async def generate_qr_code(self) -> Dict[str, Any]:
         """
