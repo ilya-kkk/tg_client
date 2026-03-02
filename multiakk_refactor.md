@@ -5,7 +5,7 @@
   - [x] Поля: `session_id`, `phone`, `string_session`, `phone_code_hash`, `is_authorized`, `created_at`, `updated_at`.
   - [x] Включить RLS, по необходимости добавить политики.
 - [x] **Проверить/настроить Supabase-переменные окружения**
-  - Добавить в `.env` и `.env.example` переменные `SUPABASE_URL`, `SUPABASE_KEY`.
+  - [x] Добавить в `.env` и `.env.example` переменные `SUPABASE_URL`, `SUPABASE_KEY`.
 - [x] **Обновить зависимости**
   - Добавить Python SDK для Supabase в `requirements.txt`.
 
