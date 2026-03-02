@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import (
     SessionPasswordNeededError,
     PhoneCodeInvalidError,
@@ -23,45 +24,148 @@ from telethon.tl.types import (
     DocumentAttributeAudio,
     DocumentAttributeSticker,
 )
-from app.config import API_ID, API_HASH, SESSIONS_DIR, SESSION_NAME
+from app.config import API_ID, API_HASH
+from app.supabase_client import SessionRepo
 
 
-class TelegramClientManager:
-    """Менеджер для управления Telethon клиентом"""
-    
-    def __init__(self):
-        self.client: Optional[TelegramClient] = None
-        self.phone_code_hash: Optional[str] = None
-        self.phone: Optional[str] = None
-        self._is_connected = False
-        self._qr_login_token: Optional[bytes] = None
-        self._qr_expires_at: Optional[int] = None
-    
-    async def init_client(self) -> bool:
-        """
-        Инициализирует клиент и проверяет существующую сессию.
-        Возвращает True если авторизация успешна, False если нужна авторизация.
-        """
+class MultiSessionManager:
+    """Менеджер Telethon с поддержкой нескольких сессий."""
+
+    def __init__(
+        self,
+        session_repo: Optional[SessionRepo] = None,
+        default_session_id: str = "default",
+    ):
+        self.session_repo = session_repo
+        self.default_session_id = default_session_id
+        self._clients: Dict[str, TelegramClient] = {}
+        self._auth_clients: Dict[str, TelegramClient] = {}
+        self._authorized_sessions: set[str] = set()
+        self._auth_state: Dict[str, Dict[str, str]] = {}
+
+    def _get_session_repo(self) -> SessionRepo:
+        if self.session_repo is None:
+            self.session_repo = SessionRepo()
+        return self.session_repo
+
+    def _create_client(self, string_session: str = "") -> TelegramClient:
         if not API_ID or not API_HASH:
             raise ValueError("API_ID и API_HASH должны быть установлены")
-        
-        session_path = SESSIONS_DIR / SESSION_NAME
-        
-        self.client = TelegramClient(
-            str(session_path),
-            int(API_ID),
-            API_HASH
-        )
-        
-        await self.client.connect()
-        
-        if await self.client.is_user_authorized():
-            self._is_connected = True
-            return True
-        
-        return False
+        return TelegramClient(StringSession(string_session), int(API_ID), API_HASH)
+
+    async def _ensure_auth_client(self, session_id: str) -> TelegramClient:
+        client = self._auth_clients.get(session_id)
+        if client:
+            return client
+
+        client = self._create_client("")
+        await client.connect()
+        self._auth_clients[session_id] = client
+        return client
+
+    def _normalize_session_id(self, session_id: Optional[str]) -> str:
+        value = (session_id or "").strip()
+        if not value:
+            return self.default_session_id
+        return value
+
+    async def get_client(self, session_id: str) -> TelegramClient:
+        """Возвращает авторизованный клиент для session_id."""
+        sid = self._normalize_session_id(session_id)
+
+        cached = self._clients.get(sid)
+        if cached:
+            if not cached.is_connected():
+                await cached.connect()
+            if await cached.is_user_authorized():
+                self._authorized_sessions.add(sid)
+                return cached
+            self._clients.pop(sid, None)
+            self._authorized_sessions.discard(sid)
+            await cached.disconnect()
+
+        row = self._get_session_repo().get(sid) or {}
+        string_session = row.get("string_session") or ""
+        if not string_session:
+            raise ValueError(f"Сессия '{sid}' не найдена или не авторизована")
+
+        client = self._create_client(string_session)
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            raise ValueError(f"Сессия '{sid}' не авторизована")
+
+        self._clients[sid] = client
+        self._authorized_sessions.add(sid)
+        return client
+
+    def _get_auth_state(self, session_id: str) -> Dict[str, str]:
+        state = self._auth_state.get(session_id)
+        if state is not None:
+            return state
+
+        row = self._get_session_repo().get(session_id)
+        state = {
+            "phone": (row or {}).get("phone") or "",
+            "phone_code_hash": (row or {}).get("phone_code_hash") or "",
+        }
+        self._auth_state[session_id] = state
+        return state
+
+    @property
+    def client(self) -> Optional[TelegramClient]:
+        session_id = self.default_session_id
+        return self._clients.get(session_id) or self._auth_clients.get(session_id)
+
+    @client.setter
+    def client(self, value: Optional[TelegramClient]) -> None:
+        session_id = self.default_session_id
+        if value is None:
+            self._clients.pop(session_id, None)
+            self._auth_clients.pop(session_id, None)
+            self._authorized_sessions.discard(session_id)
+            return
+        self._clients[session_id] = value
+
+    @property
+    def phone(self) -> Optional[str]:
+        state = self._get_auth_state(self.default_session_id)
+        return state.get("phone") or None
+
+    @phone.setter
+    def phone(self, value: Optional[str]) -> None:
+        session_id = self.default_session_id
+        state = self._get_auth_state(session_id)
+        state["phone"] = value or ""
+
+    @property
+    def phone_code_hash(self) -> Optional[str]:
+        state = self._get_auth_state(self.default_session_id)
+        return state.get("phone_code_hash") or None
+
+    @phone_code_hash.setter
+    def phone_code_hash(self, value: Optional[str]) -> None:
+        session_id = self.default_session_id
+        state = self._get_auth_state(session_id)
+        state["phone_code_hash"] = value or ""
+
+    @property
+    def _is_connected(self) -> bool:
+        return self.default_session_id in self._authorized_sessions
+
+    @_is_connected.setter
+    def _is_connected(self, value: bool) -> None:
+        if value:
+            self._authorized_sessions.add(self.default_session_id)
+        else:
+            self._authorized_sessions.discard(self.default_session_id)
     
-    async def send_code(self, phone: str, force_sms: bool = False) -> Dict[str, Any]:
+    async def send_code(
+        self,
+        session_id: str,
+        phone: Optional[str] = None,
+        force_sms: bool = False,
+    ) -> Dict[str, Any]:
         # Примечание: параметр force_sms игнорируется, так как Telegram больше не поддерживает эту функцию
         """
         Отправляет код подтверждения на телефон.
@@ -76,17 +180,33 @@ class TelegramClientManager:
         import logging
         logger = logging.getLogger(__name__)
         
-        if not self.client:
-            await self.init_client()
-        
+        if phone is None:
+            # Backward compatibility: send_code(phone, force_sms=...)
+            phone = session_id
+            session_id = self.default_session_id
+        session_id = self._normalize_session_id(session_id)
+        phone = phone.strip()
+
         try:
             logger.info(f"Отправка кода на номер: {phone}")
-            self.phone = phone
+            client = self._auth_clients.get(session_id)
+            if client:
+                await client.disconnect()
+
+            client = await self._ensure_auth_client(session_id)
+            self._clients.pop(session_id, None)
+            state = self._get_auth_state(session_id)
+            state["phone"] = phone
             
             # Примечание: force_sms больше не работает в Telegram API
             # Telegram сам решает, как отправить код (обычно через приложение)
-            result = await self.client.send_code_request(phone)
-            self.phone_code_hash = result.phone_code_hash
+            result = await client.send_code_request(phone)
+            state["phone_code_hash"] = result.phone_code_hash
+            self._get_session_repo().save_auth_state(
+                session_id=session_id,
+                phone=phone,
+                phone_code_hash=result.phone_code_hash,
+            )
             
             logger.info(f"Код успешно отправлен. Тип отправки: {result.type}")
             
@@ -123,7 +243,12 @@ class TelegramClientManager:
             logger.error(f"Неожиданная ошибка при отправке кода: {e}", exc_info=True)
             raise ValueError(f"Ошибка при отправке кода: {str(e)}")
     
-    async def sign_in(self, phone: str, code: str) -> Dict[str, Any]:
+    async def sign_in(
+        self,
+        session_id: str,
+        phone: Optional[str] = None,
+        code: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Вход с кодом подтверждения.
         
@@ -134,16 +259,27 @@ class TelegramClientManager:
         Returns:
             Статус авторизации
         """
-        if not self.client:
-            await self.init_client()
-        
-        if not self.phone_code_hash:
-            raise ValueError("Сначала вызовите /auth/login")
+        if code is None and phone is not None:
+            # Backward compatibility: sign_in(phone, code)
+            code = phone
+            phone = session_id
+            session_id = self.default_session_id
+        session_id = self._normalize_session_id(session_id)
+        if not phone or not code:
+            raise ValueError("Нужно передать phone и code")
+
+        state = self._get_auth_state(session_id)
+        if not state.get("phone_code_hash"):
+            raise ValueError("Сначала вызовите /sessions/{session_id}/auth/login")
         
         try:
-            await self.client.sign_in(phone, code, phone_code_hash=self.phone_code_hash)
-            self._is_connected = True
-            self.phone_code_hash = None
+            client = await self._ensure_auth_client(session_id)
+            await client.sign_in(phone, code, phone_code_hash=state["phone_code_hash"])
+            self._clients[session_id] = client
+            self._auth_clients.pop(session_id, None)
+            self._authorized_sessions.add(session_id)
+            state["phone_code_hash"] = ""
+            self._get_session_repo().save_authorized(session_id, client.session.save())
             
             return {
                 "success": True,
@@ -160,7 +296,11 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
     
-    async def sign_in_password(self, password: str) -> Dict[str, Any]:
+    async def sign_in_password(
+        self,
+        session_id: str,
+        password: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Вход с паролем двухфакторной аутентификации.
         
@@ -170,12 +310,20 @@ class TelegramClientManager:
         Returns:
             Статус авторизации
         """
-        if not self.client:
-            await self.init_client()
-        
         try:
-            await self.client.sign_in(password=password)
-            self._is_connected = True
+            if password is None:
+                # Backward compatibility: sign_in_password(password)
+                password = session_id
+                session_id = self.default_session_id
+            session_id = self._normalize_session_id(session_id)
+            if not password:
+                raise ValueError("Пароль не может быть пустым")
+            client = await self._ensure_auth_client(session_id)
+            await client.sign_in(password=password)
+            self._clients[session_id] = client
+            self._auth_clients.pop(session_id, None)
+            self._authorized_sessions.add(session_id)
+            self._get_session_repo().save_authorized(session_id, client.session.save())
             
             return {
                 "success": True,
@@ -184,7 +332,7 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Неверный пароль или ошибка: {e.message}")
     
-    async def get_dialogs(self, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_dialogs(self, session_id: str = "default", limit: int = 100) -> List[Dict[str, Any]]:
         """
         Получает список всех диалогов (чатов).
         
@@ -194,14 +342,11 @@ class TelegramClientManager:
         Returns:
             Список словарей с информацией о чатах
         """
-        if not self.client:
-            await self.init_client()
-        
-        if not self._is_connected:
-            raise ValueError("Необходима авторизация")
+        session_id = self._normalize_session_id(session_id)
+        client = await self.get_client(session_id)
         
         dialogs = []
-        async for dialog in self.client.iter_dialogs(limit=limit):
+        async for dialog in client.iter_dialogs(limit=limit):
             chat_info = {
                 "id": dialog.id,
                 "name": dialog.name,
@@ -253,7 +398,7 @@ class TelegramClientManager:
             Словарь с информацией о чате и списком участников
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -342,7 +487,7 @@ class TelegramClientManager:
             Словарь с информацией о чате и списком администраторов
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -428,7 +573,7 @@ class TelegramClientManager:
             Словарь с деталями чата
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -513,7 +658,7 @@ class TelegramClientManager:
             Результат изменения
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -579,7 +724,7 @@ class TelegramClientManager:
             Результат установки фото
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -649,7 +794,7 @@ class TelegramClientManager:
             Результат создания
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -727,7 +872,7 @@ class TelegramClientManager:
             Результат приглашения
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -786,7 +931,7 @@ class TelegramClientManager:
             Результат исключения
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -837,7 +982,7 @@ class TelegramClientManager:
             Результат изменения прав
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -894,7 +1039,12 @@ class TelegramClientManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
-    async def send_message(self, chat_identifier: str, message: str) -> Dict[str, Any]:
+    async def send_message(
+        self,
+        session_id: str = "default",
+        chat_identifier: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Отправляет сообщение в чат.
         
@@ -905,14 +1055,18 @@ class TelegramClientManager:
         Returns:
             Информация об отправленном сообщении
         """
-        if not self.client:
-            await self.init_client()
-        
-        if not self._is_connected:
-            raise ValueError("Необходима авторизация")
+        if message is None and chat_identifier is not None:
+            # Backward compatibility: send_message(chat_identifier, message)
+            message = chat_identifier
+            chat_identifier = session_id
+            session_id = self.default_session_id
+        if not chat_identifier or message is None:
+            raise ValueError("Нужно передать chat_identifier и message")
+        session_id = self._normalize_session_id(session_id)
+        client = await self.get_client(session_id)
         
         try:
-            sent_message = await self.client.send_message(chat_identifier, message)
+            sent_message = await client.send_message(chat_identifier, message)
             
             return {
                 "success": True,
@@ -948,7 +1102,7 @@ class TelegramClientManager:
             Информация об отправленном сообщении
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1015,7 +1169,7 @@ class TelegramClientManager:
             Информация об отправленном сообщении
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1076,7 +1230,7 @@ class TelegramClientManager:
         Отправляет стикер или GIF в чат.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1150,7 +1304,7 @@ class TelegramClientManager:
         Отправляет геолокацию в чат.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1205,7 +1359,7 @@ class TelegramClientManager:
         Отправляет контакт в чат.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1260,7 +1414,7 @@ class TelegramClientManager:
             Информация об отредактированном сообщении
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1308,7 +1462,7 @@ class TelegramClientManager:
             Результат удаления сообщений
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1348,7 +1502,7 @@ class TelegramClientManager:
             Результат пересылки сообщений
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1396,7 +1550,7 @@ class TelegramClientManager:
             Информация об отправленном reply-сообщении
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1445,7 +1599,7 @@ class TelegramClientManager:
             Словарь с информацией о чате и списком сообщений
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
         
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1569,7 +1723,7 @@ class TelegramClientManager:
             Словарь с информацией о чате и найденных сообщениях
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1676,7 +1830,7 @@ class TelegramClientManager:
             Словарь с информацией о чате и отфильтрованными сообщениями
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1729,7 +1883,7 @@ class TelegramClientManager:
             Результат выполнения отметки как прочитанных
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1772,7 +1926,7 @@ class TelegramClientManager:
             Результат операции
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1823,7 +1977,7 @@ class TelegramClientManager:
             Результат установки/снятия реакции
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1863,7 +2017,7 @@ class TelegramClientManager:
             Словарь с байтами файла, именем и content-type
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
         
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1928,7 +2082,7 @@ class TelegramClientManager:
             Результат операции архивирования
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1962,7 +2116,7 @@ class TelegramClientManager:
             Словарь с полями пользователя
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2008,7 +2162,7 @@ class TelegramClientManager:
             Список словарей с информацией о контактах
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2048,7 +2202,7 @@ class TelegramClientManager:
             Словарь со статусом пользователя
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2090,7 +2244,7 @@ class TelegramClientManager:
         Получает информацию о текущем авторизованном аккаунте.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2122,7 +2276,7 @@ class TelegramClientManager:
         Изменяет username текущего аккаунта.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2146,7 +2300,7 @@ class TelegramClientManager:
         Изменяет имя и фамилию текущего аккаунта.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2174,7 +2328,7 @@ class TelegramClientManager:
         Изменяет биографию (about) текущего аккаунта.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2198,7 +2352,7 @@ class TelegramClientManager:
         Изменяет фото профиля текущего аккаунта.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2232,7 +2386,7 @@ class TelegramClientManager:
         Отключает все остальные устройства (сессии), кроме текущей.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2270,7 +2424,7 @@ class TelegramClientManager:
             Результат операции
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2334,7 +2488,7 @@ class TelegramClientManager:
             Результат операции
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2376,7 +2530,7 @@ class TelegramClientManager:
             Результат отправки команды
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2412,7 +2566,7 @@ class TelegramClientManager:
         Нажимает inline-кнопку в сообщении.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2463,7 +2617,7 @@ class TelegramClientManager:
             Результат подписки
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2497,7 +2651,7 @@ class TelegramClientManager:
             Результат отписки
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2532,7 +2686,7 @@ class TelegramClientManager:
             Результат публикации поста
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2572,7 +2726,7 @@ class TelegramClientManager:
             Результат редактирования поста
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2611,7 +2765,7 @@ class TelegramClientManager:
             Результат удаления постов
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2650,7 +2804,7 @@ class TelegramClientManager:
         logger = logging.getLogger(__name__)
         
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
         
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2861,7 +3015,7 @@ class TelegramClientManager:
         logger = logging.getLogger(__name__)
         
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
         
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2930,257 +3084,16 @@ class TelegramClientManager:
     
     async def disconnect(self):
         """Отключает клиент"""
-        if self.client:
-            await self.client.disconnect()
-            self._is_connected = False
+        for client in list(self._clients.values()):
+            await client.disconnect()
+        for client in list(self._auth_clients.values()):
+            await client.disconnect()
+        self._clients.clear()
+        self._auth_clients.clear()
+        self._authorized_sessions.clear()
     
-    def is_connected(self) -> bool:
-        """Проверяет, авторизован ли клиент"""
-        return self._is_connected
+    def is_connected(self, session_id: Optional[str] = None) -> bool:
+        """Проверяет, авторизована ли сессия."""
+        sid = self._normalize_session_id(session_id)
+        return sid in self._authorized_sessions
     
-    async def generate_qr_code(self) -> Dict[str, Any]:
-        """
-        Генерирует QR-код для авторизации через сканирование.
-        
-        Returns:
-            Словарь с QR-кодом URL и данными для отображения
-        """
-        import logging
-        import time
-        logger = logging.getLogger(__name__)
-        
-        if not self.client:
-            await self.init_client()
-        
-        try:
-            logger.info("Генерация QR-кода для авторизации...")
-            
-            # Вызываем exportLoginToken
-            result = await self.client(functions.auth.ExportLoginTokenRequest(
-                api_id=int(API_ID),
-                api_hash=API_HASH,
-                except_ids=[]
-            ))
-            
-            # Проверяем тип результата
-            if isinstance(result, types.auth.LoginToken):
-                # Успешно получили токен
-                token = result.token
-                expires = result.expires
-                
-                # Обрабатываем expires (может быть int или datetime)
-                if isinstance(expires, datetime):
-                    # Если это datetime, вычисляем разницу в секундах
-                    # Используем timestamp для корректного сравнения с timezone
-                    expires_timestamp = int(expires.timestamp())
-                    current_timestamp = int(time.time())
-                    expires_seconds = expires_timestamp - current_timestamp
-                else:
-                    # Если это int (количество секунд)
-                    expires_seconds = int(expires)
-                    expires_timestamp = int(time.time()) + expires_seconds
-                
-                self._qr_login_token = token
-                self._qr_expires_at = expires_timestamp
-                
-                # Кодируем токен в base64url
-                token_b64 = base64.urlsafe_b64encode(token).decode('utf-8').rstrip('=')
-                
-                # Создаем URL для QR-кода
-                qr_url = f"tg://login?token={token_b64}"
-                
-                logger.info(f"QR-код сгенерирован. Истекает через {expires_seconds} секунд")
-                
-                return {
-                    "success": True,
-                    "qr_url": qr_url,
-                    "qr_code_data": token_b64,
-                    "expires_in": expires_seconds,
-                    "message": f"QR-код сгенерирован. Отсканируйте его в Telegram приложении. Действителен {expires_seconds} секунд."
-                }
-            elif isinstance(result, types.auth.LoginTokenSuccess):
-                # Уже авторизован!
-                logger.info("Уже авторизован через QR-код")
-                self._is_connected = True
-                return {
-                    "success": True,
-                    "authorized": True,
-                    "message": "Авторизация успешна через QR-код"
-                }
-            else:
-                logger.error(f"Неожиданный тип результата: {type(result)}")
-                raise ValueError(f"Неожиданный ответ от сервера: {type(result)}")
-                
-        except RPCError as e:
-            logger.error(f"Ошибка Telegram API при генерации QR-кода: {e.message}")
-            raise ValueError(f"Ошибка Telegram API: {e.message}")
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при генерации QR-кода: {e}", exc_info=True)
-            raise ValueError(f"Ошибка при генерации QR-кода: {str(e)}")
-    
-    async def check_qr_status(self) -> Dict[str, Any]:
-        """
-        Проверяет статус QR-кода авторизации.
-        Должен вызываться периодически после генерации QR-кода.
-        
-        Returns:
-            Статус авторизации
-        """
-        import logging
-        import time
-        logger = logging.getLogger(__name__)
-        
-        if not self.client:
-            await self.init_client()
-        
-        # Сначала проверяем, не авторизованы ли мы уже
-        # Переподключаемся для обновления состояния
-        if self.client:
-            await self.client.disconnect()
-            await self.client.connect()
-        
-        if await self.client.is_user_authorized():
-            logger.info("Клиент уже авторизован")
-            self._is_connected = True
-            self._qr_login_token = None
-            self._qr_expires_at = None
-            return {
-                "success": True,
-                "authorized": True,
-                "message": "Авторизация успешна через QR-код"
-            }
-        
-        if not self._qr_login_token:
-            raise ValueError("Сначала вызовите /auth/qr/generate")
-        
-        # Проверяем, не истек ли токен
-        if self._qr_expires_at and int(time.time()) >= self._qr_expires_at:
-            raise ValueError("QR-код истек. Сгенерируйте новый через /auth/qr/generate")
-        
-        try:
-            # Вызываем exportLoginToken снова для проверки статуса
-            result = await self.client(functions.auth.ExportLoginTokenRequest(
-                api_id=int(API_ID),
-                api_hash=API_HASH,
-                except_ids=[]
-            ))
-            
-            if isinstance(result, types.auth.LoginTokenSuccess):
-                # Успешная авторизация!
-                logger.info("QR-код авторизация успешна")
-                # Проверяем авторизацию еще раз для уверенности
-                if await self.client.is_user_authorized():
-                    # Сохраняем сессию явно
-                    await self.client.disconnect()
-                    await self.client.connect()
-                    # Проверяем еще раз после переподключения
-                    if await self.client.is_user_authorized():
-                        self._is_connected = True
-                        self._qr_login_token = None
-                        self._qr_expires_at = None
-                        
-                        return {
-                            "success": True,
-                            "authorized": True,
-                            "message": "Авторизация успешна через QR-код"
-                        }
-                else:
-                    logger.warning("LoginTokenSuccess получен, но is_user_authorized() вернул False")
-                    return {
-                        "success": False,
-                        "authorized": False,
-                        "message": "QR-код принят, но авторизация еще не завершена. Попробуйте еще раз через несколько секунд."
-                    }
-            elif isinstance(result, types.auth.LoginTokenMigrateTo):
-                # Нужно мигрировать на другой DC
-                logger.info(f"Миграция на DC {result.dc_id}")
-                token = result.token
-                
-                # Импортируем токен на новый DC
-                import_result = await self.client(functions.auth.ImportLoginTokenRequest(token))
-                
-                if isinstance(import_result, types.auth.LoginTokenSuccess):
-                    logger.info("Миграция и авторизация успешны")
-                    # Сохраняем сессию явно
-                    await self.client.disconnect()
-                    await self.client.connect()
-                    # Проверяем авторизацию
-                    if await self.client.is_user_authorized():
-                        self._is_connected = True
-                        self._qr_login_token = None
-                        self._qr_expires_at = None
-                        
-                        return {
-                            "success": True,
-                            "authorized": True,
-                            "message": "Авторизация успешна через QR-код (после миграции)"
-                        }
-                    else:
-                        logger.warning("ImportLoginToken успешен, но is_user_authorized() вернул False")
-                        return {
-                            "success": False,
-                            "authorized": False,
-                            "message": "Миграция завершена, но авторизация еще не завершена. Попробуйте еще раз."
-                        }
-                else:
-                    raise ValueError(f"Ошибка при импорте токена: {type(import_result)}")
-            elif isinstance(result, types.auth.LoginToken):
-                # Токен еще не принят, но проверяем авторизацию на всякий случай
-                if await self.client.is_user_authorized():
-                    logger.info("Обнаружена авторизация при проверке статуса")
-                    self._is_connected = True
-                    self._qr_login_token = None
-                    self._qr_expires_at = None
-                    return {
-                        "success": True,
-                        "authorized": True,
-                        "message": "Авторизация успешна через QR-код"
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "authorized": False,
-                        "message": "QR-код еще не отсканирован. Продолжайте сканирование."
-                    }
-            else:
-                raise ValueError(f"Неожиданный ответ: {type(result)}")
-                
-        except RPCError as e:
-            error_msg = str(e.message)
-            if "AUTH_TOKEN_EXPIRED" in error_msg:
-                raise ValueError("QR-код истек. Сгенерируйте новый через /auth/qr/generate")
-            elif "AUTH_TOKEN_INVALID" in error_msg:
-                raise ValueError("QR-код недействителен. Сгенерируйте новый")
-            elif "AUTH_TOKEN_ALREADY_ACCEPTED" in error_msg:
-                # Токен уже принят, проверяем авторизацию
-                logger.info("Токен уже принят, проверяем авторизацию")
-                # Переподключаемся для обновления состояния
-                await self.client.disconnect()
-                await self.client.connect()
-                if await self.client.is_user_authorized():
-                    self._is_connected = True
-                    self._qr_login_token = None
-                    self._qr_expires_at = None
-                    return {
-                        "success": True,
-                        "authorized": True,
-                        "message": "Авторизация успешна"
-                    }
-                else:
-                    # Возможно, нужно подождать немного
-                    logger.warning("Токен принят, но авторизация еще не завершена")
-                    return {
-                        "success": False,
-                        "authorized": False,
-                        "message": "QR-код принят, но авторизация еще не завершена. Попробуйте еще раз через несколько секунд."
-                    }
-            else:
-                logger.error(f"Ошибка Telegram API: {e.message}")
-                raise ValueError(f"Ошибка Telegram API: {e.message}")
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при проверке QR-кода: {e}", exc_info=True)
-            raise ValueError(f"Ошибка при проверке QR-кода: {str(e)}")
-
-
-# Глобальный экземпляр менеджера
-client_manager = TelegramClientManager()

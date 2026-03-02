@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения из .env файла
@@ -13,9 +12,6 @@ API_HASH = os.getenv("API_HASH", "")
 # Формат: socks5://user:pass@host:port или http://user:pass@host:port
 PROXY_URL = os.getenv("PROXY_URL", None)
 
-# Директория для сессий
-SESSIONS_DIR = Path(__file__).parent.parent / "sessions"
-SESSIONS_DIR.mkdir(exist_ok=True)
-
-# Имя файла сессии
-SESSION_NAME = "telegram_session"
+# Supabase
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
