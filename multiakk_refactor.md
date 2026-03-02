@@ -1,16 +1,16 @@
 ## Мультисессионный рефакторинг с Supabase
 
 ### 1. Инфраструктура Supabase
-- [x] **Создать таблицу `telegram_sessions` в Supabase**
+- **Создать таблицу `telegram_sessions` в Supabase**
   - Поля: `session_id`, `phone`, `string_session`, `phone_code_hash`, `is_authorized`, `created_at`, `updated_at`.
   - Включить RLS, по необходимости добавить политики.
-- ✅ **Проверить/настроить Supabase-переменные окружения**
+- **Проверить/настроить Supabase-переменные окружения**
   - Добавить в `.env` и `.env.example` переменные `SUPABASE_URL`, `SUPABASE_KEY`.
-- ✅ **Обновить зависимости**
+- **Обновить зависимости**
   - Добавить Python SDK для Supabase в `requirements.txt`.
 
 ### 2. Клиент Supabase и репозиторий сессий
-- [x] **Создать модуль `app/supabase_client.py`**
+- **Создать модуль `app/supabase_client.py`**
   - Инициализировать Supabase-клиент (используя `SUPABASE_URL` и `SUPABASE_KEY`).
 - **Реализовать `SessionRepo`**
   - `get(session_id)` — получить одну сессию.
