@@ -10,7 +10,7 @@
   - Добавить Python SDK для Supabase в `requirements.txt`.
 
 ### 2. Клиент Supabase и репозиторий сессий
-- **Создать модуль `app/supabase_client.py`**
+- [x] **Создать модуль `app/supabase_client.py`**
   - Инициализировать Supabase-клиент (используя `SUPABASE_URL` и `SUPABASE_KEY`).
 - **Реализовать `SessionRepo`**
   - `get(session_id)` — получить одну сессию.
