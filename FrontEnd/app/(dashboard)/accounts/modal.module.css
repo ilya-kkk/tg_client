@@ -1,0 +1,216 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(5px);
+}
+
+.modal {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  border: 1px solid #1e293b;
+  border-radius: 1rem;
+  padding: 1.3rem;
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 30px 80px rgba(2, 6, 23, 0.45);
+}
+
+.closeButton {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: 0.45rem;
+  background: transparent;
+  color: #334155;
+  font-size: 1.4rem;
+  cursor: pointer;
+}
+
+.closeButton:hover {
+  background: #f1f5f9;
+}
+
+.title {
+  margin: 0 0 1rem;
+  font-size: 1.3rem;
+}
+
+.stepBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.label {
+  font-size: 0.88rem;
+  color: #334155;
+}
+
+.row {
+  display: flex;
+  gap: 0.45rem;
+}
+
+.input {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.62rem;
+  padding: 0.6rem 0.72rem;
+  font-size: 0.95rem;
+  color: #0f172a;
+}
+
+.input:focus,
+.codeInput:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.22);
+  outline: none;
+}
+
+.primaryButton,
+.centerButton {
+  border: none;
+  border-radius: 0.62rem;
+  padding: 0.6rem 0.95rem;
+  background: linear-gradient(135deg, #0284c7, #0ea5e9);
+  color: #f8fafc;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.buttonContent {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.centerButton {
+  align-self: center;
+  min-width: 120px;
+}
+
+.primaryButton:disabled,
+.centerButton:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #334155;
+}
+
+.codeRow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.codeInput {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.65rem;
+  text-align: center;
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.footerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 1.5rem;
+}
+
+.backButton {
+  border: none;
+  background: transparent;
+  color: #0369a1;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.backButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.passwordWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.passwordWrap .input {
+  padding-right: 2.6rem;
+}
+
+.eyeButton {
+  position: absolute;
+  right: 0.35rem;
+  border: none;
+  background: transparent;
+  color: #334155;
+  width: 2rem;
+  height: 2rem;
+  cursor: pointer;
+  border-radius: 0.5rem;
+}
+
+.eyeButton:hover {
+  background: #f1f5f9;
+}
+
+.error {
+  margin: 0;
+  color: #dc2626;
+  font-size: 0.88rem;
+}
+
+.loader {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid #cbd5e1;
+  border-top-color: #0284c7;
+  border-radius: 50%;
+  animation: spin 0.85s linear infinite;
+}
+
+.inlineLoader {
+  width: 0.8rem;
+  height: 0.8rem;
+  border: 2px solid rgba(241, 245, 249, 0.45);
+  border-top-color: #f8fafc;
+  border-radius: 50%;
+  animation: spin 0.85s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 480px) {
+  .row {
+    flex-direction: column;
+  }
+
+  .primaryButton {
+    width: 100%;
+  }
+}
