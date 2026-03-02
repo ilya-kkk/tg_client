@@ -26,7 +26,7 @@
   - Удалить/перестать использовать `SESSIONS_DIR` и `SESSION_NAME` (файловые сессии).
 
 ### 4. Рефакторинг `TelegramClientManager` → мультисессии
-- **Переписать `app/telegram_client.py` под `MultiSessionManager`**
+- [x] **Переписать `app/telegram_client.py` под `MultiSessionManager`**
   - Убрать глобальные поля одной сессии: `self.client`, `self.phone_code_hash`, `self.phone`, `_qr_*`.
   - Добавить кэши:
     - `self._clients: Dict[str, TelegramClient]` — авторизованные клиенты по `session_id`.

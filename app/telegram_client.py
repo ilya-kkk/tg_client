@@ -25,39 +25,149 @@ from telethon.tl.types import (
     DocumentAttributeSticker,
 )
 from app.config import API_ID, API_HASH
+from app.supabase_client import SessionRepo
 
 
-class TelegramClientManager:
-    """Менеджер для управления Telethon клиентом"""
-    
-    def __init__(self):
-        self.client: Optional[TelegramClient] = None
-        self.phone_code_hash: Optional[str] = None
-        self.phone: Optional[str] = None
-        self._is_connected = False
-        self._qr_login_token: Optional[bytes] = None
-        self._qr_expires_at: Optional[int] = None
+class MultiSessionManager:
+    """Менеджер Telethon с поддержкой нескольких сессий."""
+
+    def __init__(
+        self,
+        session_repo: Optional[SessionRepo] = None,
+        default_session_id: str = "default",
+    ):
+        self.session_repo = session_repo
+        self.default_session_id = default_session_id
+        self._clients: Dict[str, TelegramClient] = {}
+        self._auth_clients: Dict[str, TelegramClient] = {}
+        self._authorized_sessions: set[str] = set()
+        self._auth_state: Dict[str, Dict[str, str]] = {}
+        self._qr_login_tokens: Dict[str, bytes] = {}
+        self._qr_expires_at_map: Dict[str, int] = {}
+
+    def _get_session_repo(self) -> SessionRepo:
+        if self.session_repo is None:
+            self.session_repo = SessionRepo()
+        return self.session_repo
+
+    def _create_client(self, string_session: str = "") -> TelegramClient:
+        if not API_ID or not API_HASH:
+            raise ValueError("API_ID и API_HASH должны быть установлены")
+        return TelegramClient(StringSession(string_session), int(API_ID), API_HASH)
+
+    async def _ensure_auth_client(self, session_id: str) -> TelegramClient:
+        client = self._auth_clients.get(session_id)
+        if client:
+            return client
+
+        client = self._create_client("")
+        await client.connect()
+        self._auth_clients[session_id] = client
+        return client
+
+    def _get_auth_state(self, session_id: str) -> Dict[str, str]:
+        state = self._auth_state.get(session_id)
+        if state is not None:
+            return state
+
+        row = self._get_session_repo().get(session_id)
+        state = {
+            "phone": (row or {}).get("phone") or "",
+            "phone_code_hash": (row or {}).get("phone_code_hash") or "",
+        }
+        self._auth_state[session_id] = state
+        return state
+
+    @property
+    def client(self) -> Optional[TelegramClient]:
+        session_id = self.default_session_id
+        return self._clients.get(session_id) or self._auth_clients.get(session_id)
+
+    @client.setter
+    def client(self, value: Optional[TelegramClient]) -> None:
+        session_id = self.default_session_id
+        if value is None:
+            self._clients.pop(session_id, None)
+            self._auth_clients.pop(session_id, None)
+            self._authorized_sessions.discard(session_id)
+            return
+        self._clients[session_id] = value
+
+    @property
+    def phone(self) -> Optional[str]:
+        state = self._get_auth_state(self.default_session_id)
+        return state.get("phone") or None
+
+    @phone.setter
+    def phone(self, value: Optional[str]) -> None:
+        session_id = self.default_session_id
+        state = self._get_auth_state(session_id)
+        state["phone"] = value or ""
+
+    @property
+    def phone_code_hash(self) -> Optional[str]:
+        state = self._get_auth_state(self.default_session_id)
+        return state.get("phone_code_hash") or None
+
+    @phone_code_hash.setter
+    def phone_code_hash(self, value: Optional[str]) -> None:
+        session_id = self.default_session_id
+        state = self._get_auth_state(session_id)
+        state["phone_code_hash"] = value or ""
+
+    @property
+    def _is_connected(self) -> bool:
+        return self.default_session_id in self._authorized_sessions
+
+    @_is_connected.setter
+    def _is_connected(self, value: bool) -> None:
+        if value:
+            self._authorized_sessions.add(self.default_session_id)
+        else:
+            self._authorized_sessions.discard(self.default_session_id)
+
+    @property
+    def _qr_login_token(self) -> Optional[bytes]:
+        return self._qr_login_tokens.get(self.default_session_id)
+
+    @_qr_login_token.setter
+    def _qr_login_token(self, value: Optional[bytes]) -> None:
+        if value is None:
+            self._qr_login_tokens.pop(self.default_session_id, None)
+        else:
+            self._qr_login_tokens[self.default_session_id] = value
+
+    @property
+    def _qr_expires_at(self) -> Optional[int]:
+        return self._qr_expires_at_map.get(self.default_session_id)
+
+    @_qr_expires_at.setter
+    def _qr_expires_at(self, value: Optional[int]) -> None:
+        if value is None:
+            self._qr_expires_at_map.pop(self.default_session_id, None)
+        else:
+            self._qr_expires_at_map[self.default_session_id] = value
     
     async def init_client(self) -> bool:
         """
         Инициализирует клиент и проверяет существующую сессию.
         Возвращает True если авторизация успешна, False если нужна авторизация.
         """
-        if not API_ID or not API_HASH:
-            raise ValueError("API_ID и API_HASH должны быть установлены")
-        
-        self.client = TelegramClient(
-            StringSession(""),
-            int(API_ID),
-            API_HASH
-        )
-        
-        await self.client.connect()
-        
-        if await self.client.is_user_authorized():
+        session_id = self.default_session_id
+        session = self._get_session_repo().get(session_id) or {}
+        string_session = session.get("string_session") or ""
+
+        client = self._create_client(string_session)
+        await client.connect()
+
+        if await client.is_user_authorized():
+            self._clients[session_id] = client
+            self._auth_clients.pop(session_id, None)
             self._is_connected = True
             return True
-        
+
+        self._auth_clients[session_id] = client
+        self._is_connected = False
         return False
     
     async def send_code(self, phone: str, force_sms: bool = False) -> Dict[str, Any]:
@@ -75,17 +185,27 @@ class TelegramClientManager:
         import logging
         logger = logging.getLogger(__name__)
         
-        if not self.client:
-            await self.init_client()
-        
+        session_id = self.default_session_id
+
         try:
             logger.info(f"Отправка кода на номер: {phone}")
+            client = self._auth_clients.get(session_id)
+            if client:
+                await client.disconnect()
+
+            client = await self._ensure_auth_client(session_id)
+            self._clients.pop(session_id, None)
             self.phone = phone
             
             # Примечание: force_sms больше не работает в Telegram API
             # Telegram сам решает, как отправить код (обычно через приложение)
-            result = await self.client.send_code_request(phone)
+            result = await client.send_code_request(phone)
             self.phone_code_hash = result.phone_code_hash
+            self._get_session_repo().save_auth_state(
+                session_id=session_id,
+                phone=phone,
+                phone_code_hash=result.phone_code_hash,
+            )
             
             logger.info(f"Код успешно отправлен. Тип отправки: {result.type}")
             
@@ -133,16 +253,19 @@ class TelegramClientManager:
         Returns:
             Статус авторизации
         """
-        if not self.client:
-            await self.init_client()
-        
-        if not self.phone_code_hash:
+        session_id = self.default_session_id
+        state = self._get_auth_state(session_id)
+        if not state.get("phone_code_hash"):
             raise ValueError("Сначала вызовите /auth/login")
         
         try:
-            await self.client.sign_in(phone, code, phone_code_hash=self.phone_code_hash)
+            client = await self._ensure_auth_client(session_id)
+            await client.sign_in(phone, code, phone_code_hash=state["phone_code_hash"])
+            self._clients[session_id] = client
+            self._auth_clients.pop(session_id, None)
             self._is_connected = True
             self.phone_code_hash = None
+            self._get_session_repo().save_authorized(session_id, client.session.save())
             
             return {
                 "success": True,
@@ -169,12 +292,14 @@ class TelegramClientManager:
         Returns:
             Статус авторизации
         """
-        if not self.client:
-            await self.init_client()
-        
         try:
-            await self.client.sign_in(password=password)
+            session_id = self.default_session_id
+            client = await self._ensure_auth_client(session_id)
+            await client.sign_in(password=password)
+            self._clients[session_id] = client
+            self._auth_clients.pop(session_id, None)
             self._is_connected = True
+            self._get_session_repo().save_authorized(session_id, client.session.save())
             
             return {
                 "success": True,
@@ -2929,9 +3054,13 @@ class TelegramClientManager:
     
     async def disconnect(self):
         """Отключает клиент"""
-        if self.client:
-            await self.client.disconnect()
-            self._is_connected = False
+        for client in list(self._clients.values()):
+            await client.disconnect()
+        for client in list(self._auth_clients.values()):
+            await client.disconnect()
+        self._clients.clear()
+        self._auth_clients.clear()
+        self._authorized_sessions.clear()
     
     def is_connected(self) -> bool:
         """Проверяет, авторизован ли клиент"""
@@ -3181,5 +3310,8 @@ class TelegramClientManager:
             raise ValueError(f"Ошибка при проверке QR-кода: {str(e)}")
 
 
+# Совместимость со старым именем класса до обновления роутов.
+TelegramClientManager = MultiSessionManager
+
 # Глобальный экземпляр менеджера
-client_manager = TelegramClientManager()
+client_manager = MultiSessionManager()
