@@ -11,7 +11,7 @@
 
 ### 2. Клиент Supabase и репозиторий сессий
 - [x] **Создать модуль `app/supabase_client.py`**
-  - Инициализировать Supabase-клиент (используя `SUPABASE_URL` и `SUPABASE_KEY`).
+  - [x] Инициализировать Supabase-клиент (используя `SUPABASE_URL` и `SUPABASE_KEY`).
 - [x] **Реализовать `SessionRepo`**
   - `get(session_id)` — получить одну сессию.
   - `list_all()` — вернуть список всех сессий.
