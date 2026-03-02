@@ -3110,5 +3110,15 @@ class MultiSessionManager:
     def is_connected(self, session_id: Optional[str] = None) -> bool:
         """Проверяет, авторизована ли сессия."""
         sid = self._normalize_session_id(session_id)
-        return sid in self._authorized_sessions
+        if sid in self._authorized_sessions:
+            return True
+
+        row = self._get_session_repo().get(sid) or {}
+        is_authorized = bool(row.get("is_authorized"))
+        string_session = (row.get("string_session") or "").strip()
+        if is_authorized and string_session:
+            self._authorized_sessions.add(sid)
+            return True
+
+        return False
     

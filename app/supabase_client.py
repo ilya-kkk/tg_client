@@ -80,13 +80,20 @@ class SessionRepo:
         return payload
 
     def delete(self, session_id: str) -> bool:
-        response = (
+        # Supabase/PostgREST может вернуть пустой data для DELETE даже при успехе,
+        # поэтому проверяем факт существования до и после удаления.
+        existing = self.get(session_id)
+        if existing is None:
+            return False
+
+        (
             self.client.table(self.table_name)
             .delete()
             .eq("session_id", session_id)
             .execute()
         )
-        return bool(response.data)
+
+        return self.get(session_id) is None
 
     def save_auth_state(
         self, session_id: str, phone: str, phone_code_hash: str
