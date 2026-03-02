@@ -2,7 +2,7 @@
 
 ### 1. Инфраструктура Supabase
 - [x] **Создать таблицу `telegram_sessions` в Supabase**
-  - Поля: `session_id`, `phone`, `string_session`, `phone_code_hash`, `is_authorized`, `created_at`, `updated_at`.
+  - [x] Поля: `session_id`, `phone`, `string_session`, `phone_code_hash`, `is_authorized`, `created_at`, `updated_at`.
   - Включить RLS, по необходимости добавить политики.
 - [x] **Проверить/настроить Supabase-переменные окружения**
   - Добавить в `.env` и `.env.example` переменные `SUPABASE_URL`, `SUPABASE_KEY`.
