@@ -7,7 +7,7 @@
 - [x] **Проверить/настроить Supabase-переменные окружения**
   - [x] Добавить в `.env` и `.env.example` переменные `SUPABASE_URL`, `SUPABASE_KEY`.
 - [x] **Обновить зависимости**
-  - Добавить Python SDK для Supabase в `requirements.txt`.
+  - [x] Добавить Python SDK для Supabase в `requirements.txt`.
 
 ### 2. Клиент Supabase и репозиторий сессий
 - [x] **Создать модуль `app/supabase_client.py`**
