@@ -22,7 +22,7 @@
 
 ### 3. Обновление конфигурации приложения
 - [x] **Обновить `app/config.py`**
-  - Добавить чтение `SUPABASE_URL` и `SUPABASE_KEY` из окружения.
+  - [x] Добавить чтение `SUPABASE_URL` и `SUPABASE_KEY` из окружения.
   - Удалить/перестать использовать `SESSIONS_DIR` и `SESSION_NAME` (файловые сессии).
 
 ### 4. Рефакторинг `TelegramClientManager` → мультисессии
