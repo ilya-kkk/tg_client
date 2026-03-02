@@ -13,52 +13,12 @@ services:
     networks:
       - app-network
 
-  db:
-    image: postgres:16
-    container_name: tg_postgres
-    restart: unless-stopped
-    profiles:
-      - all
-      - vpn
-    environment:
-      POSTGRES_DB: tg_client
-      POSTGRES_USER: tg_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-n8npass}
-    volumes:
-      - ./pgdata:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tg_user -d tg_client"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - app-network
-
-  adminer:
-    image: adminer:latest
-    container_name: tg_adminer
-    restart: unless-stopped
-    profiles:
-      - all
-      - vpn
-    ports:
-      - "8080:8080"
-    environment:
-      ADMINER_DEFAULT_SERVER: db
-    depends_on:
-      db:
-        condition: service_healthy
-    networks:
-      - app-network
 
   n8n:
     image: n8nio/n8n:latest
     restart: unless-stopped
     profiles:
-      - all
-      - vpn
+      - n8n
     ports:
       - "5678:5678"
     environment:
@@ -89,21 +49,21 @@ services:
     networks:
       - app-network
 
-  proxy:
-    image: ghcr.io/sagernet/sing-box:latest
-    container_name: tg_proxy
-    restart: unless-stopped
-    profiles:
-      - vpn
-    command: ["run", "-c", "/etc/sing-box/config.json"]
-    cap_add:
-      - NET_ADMIN
-    security_opt:
-      - no-new-privileges:true
-    volumes:
-      - ./config.json:/etc/sing-box/config.json:ro
-    networks:
-      - app-network
+#  proxy:
+#    image: ghcr.io/sagernet/sing-box:latest
+#   container_name: tg_proxy
+#    restart: unless-stopped
+#    profiles:
+#      - vpn
+#    command: ["run", "-c", "/etc/sing-box/config.json"]
+#    cap_add:
+#      - NET_ADMIN
+#    security_opt:
+#      - no-new-privileges:true
+#    volumes:
+#      - ./config.json:/etc/sing-box/config.json:ro
+#    networks:
+#      - app-network
 
 networks:
   app-network:
