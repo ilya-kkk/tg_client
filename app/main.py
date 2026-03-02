@@ -12,16 +12,97 @@ from app.models import (
     PasswordResponse,
     ChatsResponse,
     SendMessageRequest,
+    SendMediaRequest,
+    SendVoiceRequest,
+    SendStickerGifRequest,
+    SendLocationRequest,
+    SendContactMessageRequest,
     SendMessageResponse,
+    SendMediaResponse,
+    SendVoiceResponse,
+    SendStickerGifResponse,
+    SendLocationResponse,
+    SendContactMessageResponse,
+    EditMessageRequest,
+    EditMessageResponse,
+    DeleteMessagesRequest,
+    DeleteMessagesResponse,
+    ForwardMessagesRequest,
+    ForwardMessagesResponse,
+    ReplyMessageRequest,
+    ReplyMessageResponse,
+    SearchMessagesRequest,
+    SearchMessagesResponse,
+    FilterMessagesRequest,
+    FilterMessagesResponse,
+    MarkMessagesReadRequest,
+    MarkMessagesReadResponse,
+    PinMessageRequest,
+    PinMessageResponse,
+    MessageReactionRequest,
+    MessageReactionResponse,
     ErrorResponse,
     ChatInfo,
     QRCodeGenerateResponse,
     QRCodeStatusResponse,
     FolderChatsRequest,
+    ArchiveChatRequest,
+    CreateChatRequest,
+    InviteUsersRequest,
+    RemoveUsersRequest,
+    UpdateParticipantPermissionsRequest,
+    ArchiveChatResponse,
     FoldersResponse,
     FolderInfo,
     MessageInfo,
+    ChatDetailsInfo,
+    UpdateChatInfoRequest,
+    UpdateChatPhotoRequest,
+    UserInfo,
+    AccountInfo,
+    ContactInfo,
+    ParticipantInfo,
+    UserStatusInfo,
+    ManageContactRequest,
+    ManageBlockRequest,
+    UpdateUsernameRequest,
+    UpdateNameRequest,
+    UpdateAboutRequest,
+    UpdateProfilePhotoRequest,
+    SubscribeChannelRequest,
+    PublishChannelPostRequest,
+    EditChannelPostRequest,
+    DeleteChannelPostsRequest,
     MessagesResponse,
+    UserInfoResponse,
+    AccountInfoResponse,
+    ResetSessionsResponse,
+    UpdateUsernameResponse,
+    UpdateNameResponse,
+    UpdateAboutResponse,
+    UpdateProfilePhotoResponse,
+    ContactsResponse,
+    ChatParticipantsResponse,
+    ChatAdminsResponse,
+    ChatInfoResponse,
+    UpdateChatInfoResponse,
+    UpdateChatPhotoResponse,
+    CreateChatResponse,
+    InviteUsersResponse,
+    RemoveUsersResponse,
+    UpdateParticipantPermissionsResponse,
+    UserStatusResponse,
+    ManageContactResponse,
+    ManageBlockResponse,
+    SendBotCommandRequest,
+    SendBotCommandResponse,
+    BotInlineButtonClickRequest,
+    BotInlineButtonClickResponse,
+    SubscribeChannelResponse,
+    UnsubscribeChannelResponse,
+    PublishChannelPostResponse,
+    EditChannelPostResponse,
+    DeleteChannelPostsResponse,
 )
 from app.telegram_client import client_manager
 import logging
@@ -47,6 +128,22 @@ tags_metadata = [
     {
         "name": "messages",
         "description": "Отправка и получение сообщений",
+    },
+    {
+        "name": "users",
+        "description": "Работа с данными пользователей",
+    },
+    {
+        "name": "channels",
+        "description": "Работа с каналами",
+    },
+    {
+        "name": "bots",
+        "description": "Базовая работа с ботами",
+    },
+    {
+        "name": "account",
+        "description": "Управление текущим аккаунтом",
     },
 ]
 
@@ -318,6 +415,1037 @@ async def get_chats_by_folder(request: FolderChatsRequest):
 
 
 @app.post(
+    "/chats/archive",
+    response_model=ArchiveChatResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def archive_chat(request: ArchiveChatRequest):
+    """
+    Архивирует чат или возвращает его из архива.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.archive_chat(
+            request.chat_identifier,
+            request.archive,
+        )
+        return ArchiveChatResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при архивировании чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/chats/create",
+    response_model=CreateChatResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def create_chat(request: CreateChatRequest):
+    """
+    Создает новую группу или канал.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.create_chat(
+            type=request.type,
+            title=request.title,
+            about=request.about,
+            user_identifiers=request.user_identifiers,
+        )
+        return CreateChatResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при создании чата/канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/chats/invite",
+    response_model=InviteUsersResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def invite_users(request: InviteUsersRequest):
+    """
+    Приглашает пользователей в группу/супергруппу/канал.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.invite_users(
+            chat_identifier=request.chat_identifier,
+            user_identifiers=request.user_identifiers,
+            fwd_limit=request.fwd_limit,
+        )
+        return InviteUsersResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при приглашении пользователей: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/chats/remove-users",
+    response_model=RemoveUsersResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def remove_users(request: RemoveUsersRequest):
+    """
+    Исключает пользователей из группы/супергруппы.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.remove_users(
+            chat_identifier=request.chat_identifier,
+            user_identifiers=request.user_identifiers,
+        )
+        return RemoveUsersResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при исключении пользователей: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/chats/participants/permissions",
+    response_model=UpdateParticipantPermissionsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def update_participant_permissions(request: UpdateParticipantPermissionsRequest):
+    """
+    Изменяет права участника в супергруппе (mute/unmute).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_participant_permissions(
+            chat_identifier=request.chat_identifier,
+            user_identifier=request.user_identifier,
+            mute=request.mute,
+            until_date=request.until_date,
+        )
+        return UpdateParticipantPermissionsResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении прав участника: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/chats/participants",
+    response_model=ChatParticipantsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def get_chat_participants(chat_identifier: str, limit: int = 100, search: str = ""):
+    """
+    Получает участников группы/супергруппы/канала.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.get_chat_participants(
+            chat_identifier=chat_identifier,
+            limit=limit,
+            search=search,
+        )
+        participants = [ParticipantInfo(**p) for p in result["participants"]]
+        return ChatParticipantsResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            participants=participants,
+            total=len(participants),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении участников чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/chats/admins",
+    response_model=ChatAdminsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def get_chat_admins(chat_identifier: str, limit: int = 100, search: str = ""):
+    """
+    Получает список администраторов группы/супергруппы/канала.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.get_chat_admins(
+            chat_identifier=chat_identifier,
+            limit=limit,
+            search=search,
+        )
+        admins = [ParticipantInfo(**p) for p in result["admins"]]
+        return ChatAdminsResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            admins=admins,
+            total=len(admins),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении администраторов чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/chats/info",
+    response_model=ChatInfoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def get_chat_info(chat_identifier: str):
+    """
+    Получает расширенную информацию о чате: описание, фото и базовые настройки.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        chat_data = await client_manager.get_chat_info(chat_identifier)
+        return ChatInfoResponse(
+            success=True,
+            chat=ChatDetailsInfo(**chat_data),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о чате: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/chats/info",
+    response_model=UpdateChatInfoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def update_chat_info(request: UpdateChatInfoRequest):
+    """
+    Изменяет название и/или описание чата.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_chat_info(
+            chat_identifier=request.chat_identifier,
+            title=request.title,
+            about=request.about,
+        )
+        return UpdateChatInfoResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении информации чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/chats/photo",
+    response_model=UpdateChatPhotoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def update_chat_photo(request: UpdateChatPhotoRequest):
+    """
+    Устанавливает фото чата.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_chat_photo(
+            chat_identifier=request.chat_identifier,
+            photo_base64=request.photo_base64,
+        )
+        return UpdateChatPhotoResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при установке фото чата: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/users/info",
+    response_model=UserInfoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def get_user_info(user_identifier: str):
+    """
+    Получает информацию о пользователе Telegram по username, ID или телефону.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        user_data = await client_manager.get_user_info(user_identifier)
+        return UserInfoResponse(
+            success=True,
+            user=UserInfo(**user_data),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о пользователе: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/users/contacts",
+    response_model=ContactsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def get_contacts(limit: int = 200):
+    """
+    Получает список контактов текущего аккаунта.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        contacts_data = await client_manager.get_contacts(limit=limit)
+        contacts = [ContactInfo(**item) for item in contacts_data]
+        return ContactsResponse(
+            success=True,
+            contacts=contacts,
+            total=len(contacts),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка контактов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/users/contacts/manage",
+    response_model=ManageContactResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def manage_contact(request: ManageContactRequest):
+    """
+    Добавляет или удаляет контакт.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.manage_contact(
+            action=request.action,
+            user_identifier=request.user_identifier,
+            phone=request.phone,
+            first_name=request.first_name,
+            last_name=request.last_name,
+        )
+        return ManageContactResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении контакта: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/users/block",
+    response_model=ManageBlockResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def manage_block(request: ManageBlockRequest):
+    """
+    Блокирует или разблокирует пользователя.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.manage_block(
+            action=request.action,
+            user_identifier=request.user_identifier,
+        )
+        return ManageBlockResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при блокировке/разблокировке пользователя: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/bots/command",
+    response_model=SendBotCommandResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["bots"],
+)
+async def send_bot_command(request: SendBotCommandRequest):
+    """
+    Отправляет команду боту (например, /start).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_bot_command(
+            bot_identifier=request.bot_identifier,
+            command=request.command,
+        )
+        return SendBotCommandResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке команды боту: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/bots/buttons/click",
+    response_model=BotInlineButtonClickResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["bots"],
+)
+async def click_bot_inline_button(request: BotInlineButtonClickRequest):
+    """
+    Нажимает inline-кнопку в сообщении бота.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.click_inline_button(
+            chat_identifier=request.chat_identifier,
+            message_id=request.message_id,
+            row=request.row,
+            col=request.col,
+        )
+        return BotInlineButtonClickResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при нажатии inline-кнопки: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/users/status",
+    response_model=UserStatusResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def get_user_status(user_identifier: str):
+    """
+    Получает текущий статус пользователя (онлайн/оффлайн и др.).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        status_data = await client_manager.get_user_status(user_identifier)
+        return UserStatusResponse(
+            success=True,
+            user_status=UserStatusInfo(**status_data),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении статуса пользователя: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/account/me",
+    response_model=AccountInfoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def get_account_me():
+    """
+    Получает информацию о текущем авторизованном аккаунте.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        account_data = await client_manager.get_me_info()
+        return AccountInfoResponse(
+            success=True,
+            account=AccountInfo(**account_data),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о своем аккаунте: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/account/username",
+    response_model=UpdateUsernameResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def update_account_username(request: UpdateUsernameRequest):
+    """
+    Изменяет username текущего аккаунта.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_username(request.username)
+        return UpdateUsernameResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении username: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/account/name",
+    response_model=UpdateNameResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def update_account_name(request: UpdateNameRequest):
+    """
+    Изменяет имя и фамилию текущего аккаунта.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_name(
+            request.first_name,
+            request.last_name,
+        )
+        return UpdateNameResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении имени/фамилии: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/account/about",
+    response_model=UpdateAboutResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def update_account_about(request: UpdateAboutRequest):
+    """
+    Изменяет биографию (about) текущего аккаунта.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_about(request.about)
+        return UpdateAboutResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении биографии: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/account/photo",
+    response_model=UpdateProfilePhotoResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def update_account_photo(request: UpdateProfilePhotoRequest):
+    """
+    Изменяет фото профиля текущего аккаунта.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.update_profile_photo(request.photo_base64)
+        return UpdateProfilePhotoResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при изменении фото профиля: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/account/sessions/reset",
+    response_model=ResetSessionsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["account"],
+)
+async def reset_account_sessions():
+    """
+    Отключает все другие устройства (сессии), кроме текущей.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.reset_other_sessions()
+        return ResetSessionsResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отключении других сессий: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/channels/subscribe",
+    response_model=SubscribeChannelResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def subscribe_channel(request: SubscribeChannelRequest):
+    """
+    Подписывает текущий аккаунт на канал.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.subscribe_channel(request.channel_identifier)
+        return SubscribeChannelResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при подписке на канал: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/channels/unsubscribe",
+    response_model=UnsubscribeChannelResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def unsubscribe_channel(request: SubscribeChannelRequest):
+    """
+    Отписывает текущий аккаунт от канала.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.unsubscribe_channel(request.channel_identifier)
+        return UnsubscribeChannelResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отписке от канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/channels/posts",
+    response_model=MessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def get_channel_posts(channel_identifier: str, limit: int = 50):
+    """
+    Получает последние посты из канала.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.get_messages(channel_identifier, limit=limit)
+        messages = [MessageInfo(**m) for m in result["messages"]]
+        return MessagesResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            messages=messages,
+            total=len(messages),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении постов канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/channels/posts/publish",
+    response_model=PublishChannelPostResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def publish_channel_post(request: PublishChannelPostRequest):
+    """
+    Публикует пост в канал.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.publish_channel_post(
+            request.channel_identifier,
+            request.message,
+        )
+        return PublishChannelPostResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при публикации поста в канал: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.patch(
+    "/channels/posts/edit",
+    response_model=EditChannelPostResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def edit_channel_post(request: EditChannelPostRequest):
+    """
+    Редактирует пост в канале.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.edit_channel_post(
+            request.channel_identifier,
+            request.message_id,
+            request.message,
+        )
+        return EditChannelPostResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании поста канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.delete(
+    "/channels/posts",
+    response_model=DeleteChannelPostsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def delete_channel_posts(request: DeleteChannelPostsRequest):
+    """
+    Удаляет один или несколько постов в канале.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.delete_channel_posts(
+            request.channel_identifier,
+            request.message_ids,
+        )
+        return DeleteChannelPostsResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при удалении постов канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
     "/auth/qr/generate",
     response_model=QRCodeGenerateResponse,
     status_code=status.HTTP_200_OK,
@@ -458,6 +1586,546 @@ async def send_message(request: SendMessageRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-media",
+    response_model=SendMediaResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_media(request: SendMediaRequest):
+    """
+    Отправляет медиафайл в чат (фото/видео/аудио/документ).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_media(
+            chat_identifier=request.chat_identifier,
+            file_base64=request.file_base64,
+            file_name=request.file_name,
+            caption=request.caption,
+        )
+        return SendMediaResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке медиа: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-voice",
+    response_model=SendVoiceResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_voice(request: SendVoiceRequest):
+    """
+    Отправляет голосовое сообщение в чат.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_voice(
+            chat_identifier=request.chat_identifier,
+            voice_base64=request.voice_base64,
+            file_name=request.file_name,
+            caption=request.caption,
+        )
+        return SendVoiceResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке голосового сообщения: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-sticker-gif",
+    response_model=SendStickerGifResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_sticker_gif(request: SendStickerGifRequest):
+    """
+    Отправляет стикер или GIF в чат.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_sticker_gif(
+            chat_identifier=request.chat_identifier,
+            media_kind=request.media_kind,
+            file_base64=request.file_base64,
+            file_name=request.file_name,
+            emoji=request.emoji,
+            caption=request.caption,
+        )
+        return SendStickerGifResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке стикера/GIF: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-location",
+    response_model=SendLocationResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_location(request: SendLocationRequest):
+    """
+    Отправляет геолокацию в чат.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_location(
+            chat_identifier=request.chat_identifier,
+            latitude=request.latitude,
+            longitude=request.longitude,
+            caption=request.caption,
+        )
+        return SendLocationResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке геолокации: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/send-contact",
+    response_model=SendContactMessageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def send_contact_message(request: SendContactMessageRequest):
+    """
+    Отправляет контакт в чат.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.send_contact_message(
+            chat_identifier=request.chat_identifier,
+            phone_number=request.phone_number,
+            first_name=request.first_name,
+            last_name=request.last_name,
+            caption=request.caption,
+        )
+        return SendContactMessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке контакта: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.patch(
+    "/messages/edit",
+    response_model=EditMessageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def edit_message(request: EditMessageRequest):
+    """
+    Редактирует ранее отправленное сообщение в чате.
+
+    chat_identifier может быть:
+    - Username чата (например, @username)
+    - ID чата (число)
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.edit_message(
+            request.chat_identifier,
+            request.message_id,
+            request.message,
+        )
+        return EditMessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании сообщения: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.delete(
+    "/messages/delete",
+    response_model=DeleteMessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def delete_messages(request: DeleteMessagesRequest):
+    """
+    Удаляет одно или несколько сообщений в чате.
+
+    revoke:
+    - True: попытка удалить сообщения для всех участников
+    - False: удалить только у текущего аккаунта
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.delete_messages(
+            request.chat_identifier,
+            request.message_ids,
+            request.revoke,
+        )
+        return DeleteMessagesResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/forward",
+    response_model=ForwardMessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def forward_messages(request: ForwardMessagesRequest):
+    """
+    Пересылает сообщения из одного чата в другой.
+
+    from_chat_identifier - источник сообщений.
+    to_chat_identifier - чат назначения.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.forward_messages(
+            request.from_chat_identifier,
+            request.to_chat_identifier,
+            request.message_ids,
+        )
+        return ForwardMessagesResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при пересылке сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/reply",
+    response_model=ReplyMessageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def reply_message(request: ReplyMessageRequest):
+    """
+    Отправляет сообщение-ответ на конкретное сообщение в чате.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify"
+        )
+
+    try:
+        result = await client_manager.reply_message(
+            request.chat_identifier,
+            request.reply_to_message_id,
+            request.message,
+        )
+        return ReplyMessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке ответа на сообщение: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/messages/search",
+    response_model=SearchMessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def search_messages(request: SearchMessagesRequest):
+    """
+    Ищет сообщения в указанном чате по текстовому запросу.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+
+    try:
+        result = await client_manager.search_messages(
+            request.chat_identifier,
+            request.query,
+            request.limit,
+        )
+        messages = [MessageInfo(**m) for m in result["messages"]]
+        return SearchMessagesResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            query=result["query"],
+            messages=messages,
+            total=len(messages),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при поиске сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/messages/filter",
+    response_model=FilterMessagesResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def filter_messages(request: FilterMessagesRequest):
+    """
+    Фильтрует сообщения в чате по типу (text/media/photo/video/document/audio/voice/sticker/service).
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+
+    try:
+        result = await client_manager.filter_messages(
+            request.chat_identifier,
+            request.message_type,
+            request.limit,
+        )
+        messages = [MessageInfo(**m) for m in result["messages"]]
+        return FilterMessagesResponse(
+            success=True,
+            chat_id=result["chat_id"],
+            chat_name=result.get("chat_name"),
+            message_type=result["message_type"],
+            messages=messages,
+            total=len(messages),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при фильтрации сообщений: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/messages/read",
+    response_model=MarkMessagesReadResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def mark_messages_read(request: MarkMessagesReadRequest):
+    """
+    Отмечает сообщения в чате как прочитанные.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+
+    try:
+        result = await client_manager.mark_messages_read(
+            request.chat_identifier,
+            request.max_id,
+        )
+        return MarkMessagesReadResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отметке сообщений как прочитанных: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/messages/pin",
+    response_model=PinMessageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def pin_message(request: PinMessageRequest):
+    """
+    Закрепляет или открепляет сообщение в чате.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+
+    try:
+        result = await client_manager.pin_message(
+            request.chat_identifier,
+            request.message_id,
+            request.unpin,
+            request.notify,
+        )
+        return PinMessageResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при закреплении/откреплении сообщения: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/messages/reaction",
+    response_model=MessageReactionResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def set_message_reaction(request: MessageReactionRequest):
+    """
+    Устанавливает или снимает реакцию на сообщение.
+    """
+    if not client_manager.is_connected():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /auth/login и /auth/verify",
+        )
+
+    try:
+        result = await client_manager.set_message_reaction(
+            request.chat_identifier,
+            request.message_id,
+            request.reaction,
+            request.big,
+        )
+        return MessageReactionResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при установке реакции: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
         )
 
 
