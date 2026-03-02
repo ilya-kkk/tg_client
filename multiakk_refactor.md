@@ -43,7 +43,7 @@
   - Убрать глобальный `client_manager = TelegramClientManager()` и заменить инициализацией `MultiSessionManager` с `SessionRepo`.
 
 ### 5. Обновление моделей (`app/models.py`)
-- **Удалить неиспользуемые QR-модели**
+- [x] **Удалить неиспользуемые QR-модели**
   - `QRCodeGenerateResponse`, `QRCodeStatusResponse`.
 - **Добавить модели для управления сессиями**
   - `SessionInfo` — данные по одной сессии (`session_id`, `phone`, `is_authorized`, `created_at`, `updated_at`).

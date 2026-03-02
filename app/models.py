@@ -521,23 +521,6 @@ class ErrorResponse(BaseModel):
     detail: Optional[str] = None
 
 
-class QRCodeGenerateResponse(BaseModel):
-    """Ответ на генерацию QR-кода"""
-    success: bool
-    qr_url: Optional[str] = None
-    qr_code_data: Optional[str] = None
-    expires_in: Optional[int] = None
-    authorized: Optional[bool] = False
-    message: str
-
-
-class QRCodeStatusResponse(BaseModel):
-    """Ответ на проверку статуса QR-кода"""
-    success: bool
-    authorized: bool
-    message: str
-
-
 class FolderChatsRequest(BaseModel):
     """Запрос на получение чатов из папки"""
     folder_name: str = Field(..., description="Название папки (например, 'Работа', 'Личное')", min_length=1)
