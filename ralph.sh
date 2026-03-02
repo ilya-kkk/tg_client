@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REPO="/home/ilya/Desktop/tg_client"
-PLAN_FILE="$REPO/multiakk_refactor.md"
-PROMPT="$REPO/promt.md"
+PLAN_FILE="$REPO/1plans/plan_add_user.md"
+PROMPT="$REPO/1plans/promt.md"
 
 cd "$REPO"
 
