@@ -67,7 +67,7 @@
   - Остальные эндпоинты:
     - Перенести под `/sessions/{session_id}/...` (например, `/chats`, `/messages/send`, `/users/info`, `/account/me` и др.).
     - В сигнатурах добавить параметр `session_id: str` и прокидывать его в методы `MultiSessionManager`.
-- **Удалить старые маршруты, не подходящие под мультисессии**
+- [x] **Удалить старые маршруты, не подходящие под мультисессии**
   - `/auth/login`, `/auth/verify`, `/auth/password` без session_id.
   - Все QR-ручки: `/auth/qr/generate`, `/auth/qr/status`, `/auth/qr/image`.
 - **Оставить/обновить системные маршруты**

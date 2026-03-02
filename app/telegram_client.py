@@ -270,7 +270,7 @@ class MultiSessionManager:
 
         state = self._get_auth_state(session_id)
         if not state.get("phone_code_hash"):
-            raise ValueError("Сначала вызовите /auth/login")
+            raise ValueError("Сначала вызовите /sessions/{session_id}/auth/login")
         
         try:
             client = await self._ensure_auth_client(session_id)
