@@ -39,7 +39,6 @@ from app.models import (
     PinMessageResponse,
     MessageReactionRequest,
     MessageReactionResponse,
-    ErrorResponse,
     ChatInfo,
     FolderChatsRequest,
     ArchiveChatRequest,
