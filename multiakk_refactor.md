@@ -14,7 +14,7 @@
   - [x] Инициализировать Supabase-клиент (используя `SUPABASE_URL` и `SUPABASE_KEY`).
 - [x] **Реализовать `SessionRepo`**
   - [x] `get(session_id)` — получить одну сессию.
-  - `list_all()` — вернуть список всех сессий.
+  - [x] `list_all()` — вернуть список всех сессий.
   - `upsert(session_id, ...)` — создать/обновить запись.
   - `delete(session_id)` — удалить сессию.
   - `save_auth_state(session_id, phone, phone_code_hash)` — сохранить состояние после отправки кода.
