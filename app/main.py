@@ -1,8 +1,6 @@
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse, Response
 from contextlib import asynccontextmanager
-import io
-import qrcode
 from app.models import (
     LoginRequest,
     LoginResponse,
@@ -43,8 +41,6 @@ from app.models import (
     MessageReactionResponse,
     ErrorResponse,
     ChatInfo,
-    QRCodeGenerateResponse,
-    QRCodeStatusResponse,
     FolderChatsRequest,
     ArchiveChatRequest,
     CreateChatRequest,
@@ -104,12 +100,14 @@ from app.models import (
     EditChannelPostResponse,
     DeleteChannelPostsResponse,
 )
-from app.telegram_client import client_manager
+from app.supabase_client import SessionRepo
+from app.telegram_client import MultiSessionManager
 import logging
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+client_manager: MultiSessionManager | None = None
 
 
 tags_metadata = [
@@ -151,14 +149,12 @@ tags_metadata = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
+    global client_manager
+
     # При старте приложения
     try:
-        logger.info("Инициализация Telegram клиента...")
-        is_authorized = await client_manager.init_client()
-        if is_authorized:
-            logger.info("Клиент авторизован с существующей сессией")
-        else:
-            logger.info("Требуется авторизация через API")
+        logger.info("Инициализация MultiSessionManager...")
+        client_manager = MultiSessionManager(session_repo=SessionRepo())
     except Exception as e:
         logger.error(f"Ошибка инициализации клиента: {e}")
     
@@ -166,7 +162,8 @@ async def lifespan(app: FastAPI):
     
     # При остановке приложения
     logger.info("Отключение Telegram клиента...")
-    await client_manager.disconnect()
+    if client_manager is not None:
+        await client_manager.disconnect()
 
 
 app = FastAPI(
@@ -181,10 +178,11 @@ app = FastAPI(
 @app.get("/", tags=["system"])
 async def root():
     """Корневой endpoint"""
+    authorized = client_manager.is_connected() if client_manager is not None else False
     return {
         "message": "Telegram REST API",
         "status": "running",
-        "authorized": client_manager.is_connected()
+        "authorized": authorized
     }
 
 
@@ -1442,109 +1440,6 @@ async def delete_channel_posts(request: DeleteChannelPostsRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",
-        )
-
-
-@app.post(
-    "/auth/qr/generate",
-    response_model=QRCodeGenerateResponse,
-    status_code=status.HTTP_200_OK,
-    tags=["auth"],
-)
-async def generate_qr_code():
-    """
-    Генерирует QR-код для авторизации через сканирование.
-    
-    Отсканируйте QR-код в Telegram приложении (Настройки -> Устройства -> Сканировать QR-код).
-    После сканирования используйте /auth/qr/status для проверки статуса авторизации.
-    """
-    try:
-        result = await client_manager.generate_qr_code()
-        return QRCodeGenerateResponse(**result)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при генерации QR-кода: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Внутренняя ошибка сервера: {str(e)}"
-        )
-
-
-@app.get(
-    "/auth/qr/status",
-    response_model=QRCodeStatusResponse,
-    status_code=status.HTTP_200_OK,
-    tags=["auth"],
-)
-async def check_qr_status():
-    """
-    Проверяет статус QR-кода авторизации.
-    
-    Вызывайте этот endpoint периодически после генерации QR-кода,
-    чтобы узнать, был ли он отсканирован и авторизация завершена.
-    """
-    try:
-        result = await client_manager.check_qr_status()
-        return QRCodeStatusResponse(**result)
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при проверке статуса QR-кода: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Внутренняя ошибка сервера: {str(e)}"
-        )
-
-
-@app.get("/auth/qr/image", tags=["auth"])
-async def get_qr_code_image():
-    """
-    Генерирует и возвращает изображение QR-кода для авторизации.
-    
-    Сначала вызовите /auth/qr/generate, затем этот endpoint для получения изображения.
-    Или просто вызовите этот endpoint - он автоматически сгенерирует QR-код.
-    """
-    try:
-        # Генерируем QR-код (если уже есть, метод вернет существующий или создаст новый)
-        qr_data = await client_manager.generate_qr_code()
-        qr_url = qr_data.get("qr_url")
-        
-        if not qr_url:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Не удалось получить QR-код URL"
-            )
-        
-        # Создаем QR-код изображение
-        qr = qrcode.QRCode(version=1, box_size=10, border=5)
-        qr.add_data(qr_url)
-        qr.make(fit=True)
-        
-        img = qr.make_image(fill_color="black", back_color="white")
-        
-        # Конвертируем в bytes
-        img_byte_arr = io.BytesIO()
-        img.save(img_byte_arr, format='PNG')
-        img_byte_arr.seek(0)
-        
-        return Response(content=img_byte_arr.getvalue(), media_type="image/png")
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при генерации изображения QR-кода: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Внутренняя ошибка сервера: {str(e)}"
         )
 
 

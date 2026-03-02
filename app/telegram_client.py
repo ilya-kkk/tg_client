@@ -42,8 +42,6 @@ class MultiSessionManager:
         self._auth_clients: Dict[str, TelegramClient] = {}
         self._authorized_sessions: set[str] = set()
         self._auth_state: Dict[str, Dict[str, str]] = {}
-        self._qr_login_tokens: Dict[str, bytes] = {}
-        self._qr_expires_at_map: Dict[str, int] = {}
 
     def _get_session_repo(self) -> SessionRepo:
         if self.session_repo is None:
@@ -161,50 +159,6 @@ class MultiSessionManager:
             self._authorized_sessions.add(self.default_session_id)
         else:
             self._authorized_sessions.discard(self.default_session_id)
-
-    @property
-    def _qr_login_token(self) -> Optional[bytes]:
-        return self._qr_login_tokens.get(self.default_session_id)
-
-    @_qr_login_token.setter
-    def _qr_login_token(self, value: Optional[bytes]) -> None:
-        if value is None:
-            self._qr_login_tokens.pop(self.default_session_id, None)
-        else:
-            self._qr_login_tokens[self.default_session_id] = value
-
-    @property
-    def _qr_expires_at(self) -> Optional[int]:
-        return self._qr_expires_at_map.get(self.default_session_id)
-
-    @_qr_expires_at.setter
-    def _qr_expires_at(self, value: Optional[int]) -> None:
-        if value is None:
-            self._qr_expires_at_map.pop(self.default_session_id, None)
-        else:
-            self._qr_expires_at_map[self.default_session_id] = value
-    
-    async def init_client(self) -> bool:
-        """
-        Инициализирует клиент и проверяет существующую сессию.
-        Возвращает True если авторизация успешна, False если нужна авторизация.
-        """
-        session_id = self.default_session_id
-        session = self._get_session_repo().get(session_id) or {}
-        string_session = session.get("string_session") or ""
-
-        client = self._create_client(string_session)
-        await client.connect()
-
-        if await client.is_user_authorized():
-            self._clients[session_id] = client
-            self._auth_clients.pop(session_id, None)
-            self._is_connected = True
-            return True
-
-        self._auth_clients[session_id] = client
-        self._is_connected = False
-        return False
     
     async def send_code(
         self,
@@ -444,7 +398,7 @@ class MultiSessionManager:
             Словарь с информацией о чате и списком участников
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -533,7 +487,7 @@ class MultiSessionManager:
             Словарь с информацией о чате и списком администраторов
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -619,7 +573,7 @@ class MultiSessionManager:
             Словарь с деталями чата
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -704,7 +658,7 @@ class MultiSessionManager:
             Результат изменения
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -770,7 +724,7 @@ class MultiSessionManager:
             Результат установки фото
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -840,7 +794,7 @@ class MultiSessionManager:
             Результат создания
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -918,7 +872,7 @@ class MultiSessionManager:
             Результат приглашения
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -977,7 +931,7 @@ class MultiSessionManager:
             Результат исключения
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1028,7 +982,7 @@ class MultiSessionManager:
             Результат изменения прав
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1148,7 +1102,7 @@ class MultiSessionManager:
             Информация об отправленном сообщении
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1215,7 +1169,7 @@ class MultiSessionManager:
             Информация об отправленном сообщении
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1276,7 +1230,7 @@ class MultiSessionManager:
         Отправляет стикер или GIF в чат.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1350,7 +1304,7 @@ class MultiSessionManager:
         Отправляет геолокацию в чат.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1405,7 +1359,7 @@ class MultiSessionManager:
         Отправляет контакт в чат.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1460,7 +1414,7 @@ class MultiSessionManager:
             Информация об отредактированном сообщении
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1508,7 +1462,7 @@ class MultiSessionManager:
             Результат удаления сообщений
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1548,7 +1502,7 @@ class MultiSessionManager:
             Результат пересылки сообщений
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1596,7 +1550,7 @@ class MultiSessionManager:
             Информация об отправленном reply-сообщении
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1645,7 +1599,7 @@ class MultiSessionManager:
             Словарь с информацией о чате и списком сообщений
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
         
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1769,7 +1723,7 @@ class MultiSessionManager:
             Словарь с информацией о чате и найденных сообщениях
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1876,7 +1830,7 @@ class MultiSessionManager:
             Словарь с информацией о чате и отфильтрованными сообщениями
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1929,7 +1883,7 @@ class MultiSessionManager:
             Результат выполнения отметки как прочитанных
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -1972,7 +1926,7 @@ class MultiSessionManager:
             Результат операции
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2023,7 +1977,7 @@ class MultiSessionManager:
             Результат установки/снятия реакции
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2063,7 +2017,7 @@ class MultiSessionManager:
             Словарь с байтами файла, именем и content-type
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
         
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2128,7 +2082,7 @@ class MultiSessionManager:
             Результат операции архивирования
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2162,7 +2116,7 @@ class MultiSessionManager:
             Словарь с полями пользователя
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2208,7 +2162,7 @@ class MultiSessionManager:
             Список словарей с информацией о контактах
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2248,7 +2202,7 @@ class MultiSessionManager:
             Словарь со статусом пользователя
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2290,7 +2244,7 @@ class MultiSessionManager:
         Получает информацию о текущем авторизованном аккаунте.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2322,7 +2276,7 @@ class MultiSessionManager:
         Изменяет username текущего аккаунта.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2346,7 +2300,7 @@ class MultiSessionManager:
         Изменяет имя и фамилию текущего аккаунта.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2374,7 +2328,7 @@ class MultiSessionManager:
         Изменяет биографию (about) текущего аккаунта.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2398,7 +2352,7 @@ class MultiSessionManager:
         Изменяет фото профиля текущего аккаунта.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2432,7 +2386,7 @@ class MultiSessionManager:
         Отключает все остальные устройства (сессии), кроме текущей.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2470,7 +2424,7 @@ class MultiSessionManager:
             Результат операции
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2534,7 +2488,7 @@ class MultiSessionManager:
             Результат операции
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2576,7 +2530,7 @@ class MultiSessionManager:
             Результат отправки команды
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2612,7 +2566,7 @@ class MultiSessionManager:
         Нажимает inline-кнопку в сообщении.
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2663,7 +2617,7 @@ class MultiSessionManager:
             Результат подписки
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2697,7 +2651,7 @@ class MultiSessionManager:
             Результат отписки
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2732,7 +2686,7 @@ class MultiSessionManager:
             Результат публикации поста
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2772,7 +2726,7 @@ class MultiSessionManager:
             Результат редактирования поста
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2811,7 +2765,7 @@ class MultiSessionManager:
             Результат удаления постов
         """
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
 
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -2850,7 +2804,7 @@ class MultiSessionManager:
         logger = logging.getLogger(__name__)
         
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
         
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -3061,7 +3015,7 @@ class MultiSessionManager:
         logger = logging.getLogger(__name__)
         
         if not self.client:
-            await self.init_client()
+            await self.get_client(self.default_session_id)
         
         if not self._is_connected:
             raise ValueError("Необходима авторизация")
@@ -3143,252 +3097,3 @@ class MultiSessionManager:
         sid = self._normalize_session_id(session_id)
         return sid in self._authorized_sessions
     
-    async def generate_qr_code(self) -> Dict[str, Any]:
-        """
-        Генерирует QR-код для авторизации через сканирование.
-        
-        Returns:
-            Словарь с QR-кодом URL и данными для отображения
-        """
-        import logging
-        import time
-        logger = logging.getLogger(__name__)
-        
-        if not self.client:
-            await self.init_client()
-        
-        try:
-            logger.info("Генерация QR-кода для авторизации...")
-            
-            # Вызываем exportLoginToken
-            result = await self.client(functions.auth.ExportLoginTokenRequest(
-                api_id=int(API_ID),
-                api_hash=API_HASH,
-                except_ids=[]
-            ))
-            
-            # Проверяем тип результата
-            if isinstance(result, types.auth.LoginToken):
-                # Успешно получили токен
-                token = result.token
-                expires = result.expires
-                
-                # Обрабатываем expires (может быть int или datetime)
-                if isinstance(expires, datetime):
-                    # Если это datetime, вычисляем разницу в секундах
-                    # Используем timestamp для корректного сравнения с timezone
-                    expires_timestamp = int(expires.timestamp())
-                    current_timestamp = int(time.time())
-                    expires_seconds = expires_timestamp - current_timestamp
-                else:
-                    # Если это int (количество секунд)
-                    expires_seconds = int(expires)
-                    expires_timestamp = int(time.time()) + expires_seconds
-                
-                self._qr_login_token = token
-                self._qr_expires_at = expires_timestamp
-                
-                # Кодируем токен в base64url
-                token_b64 = base64.urlsafe_b64encode(token).decode('utf-8').rstrip('=')
-                
-                # Создаем URL для QR-кода
-                qr_url = f"tg://login?token={token_b64}"
-                
-                logger.info(f"QR-код сгенерирован. Истекает через {expires_seconds} секунд")
-                
-                return {
-                    "success": True,
-                    "qr_url": qr_url,
-                    "qr_code_data": token_b64,
-                    "expires_in": expires_seconds,
-                    "message": f"QR-код сгенерирован. Отсканируйте его в Telegram приложении. Действителен {expires_seconds} секунд."
-                }
-            elif isinstance(result, types.auth.LoginTokenSuccess):
-                # Уже авторизован!
-                logger.info("Уже авторизован через QR-код")
-                self._is_connected = True
-                return {
-                    "success": True,
-                    "authorized": True,
-                    "message": "Авторизация успешна через QR-код"
-                }
-            else:
-                logger.error(f"Неожиданный тип результата: {type(result)}")
-                raise ValueError(f"Неожиданный ответ от сервера: {type(result)}")
-                
-        except RPCError as e:
-            logger.error(f"Ошибка Telegram API при генерации QR-кода: {e.message}")
-            raise ValueError(f"Ошибка Telegram API: {e.message}")
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при генерации QR-кода: {e}", exc_info=True)
-            raise ValueError(f"Ошибка при генерации QR-кода: {str(e)}")
-    
-    async def check_qr_status(self) -> Dict[str, Any]:
-        """
-        Проверяет статус QR-кода авторизации.
-        Должен вызываться периодически после генерации QR-кода.
-        
-        Returns:
-            Статус авторизации
-        """
-        import logging
-        import time
-        logger = logging.getLogger(__name__)
-        
-        if not self.client:
-            await self.init_client()
-        
-        # Сначала проверяем, не авторизованы ли мы уже
-        # Переподключаемся для обновления состояния
-        if self.client:
-            await self.client.disconnect()
-            await self.client.connect()
-        
-        if await self.client.is_user_authorized():
-            logger.info("Клиент уже авторизован")
-            self._is_connected = True
-            self._qr_login_token = None
-            self._qr_expires_at = None
-            return {
-                "success": True,
-                "authorized": True,
-                "message": "Авторизация успешна через QR-код"
-            }
-        
-        if not self._qr_login_token:
-            raise ValueError("Сначала вызовите /auth/qr/generate")
-        
-        # Проверяем, не истек ли токен
-        if self._qr_expires_at and int(time.time()) >= self._qr_expires_at:
-            raise ValueError("QR-код истек. Сгенерируйте новый через /auth/qr/generate")
-        
-        try:
-            # Вызываем exportLoginToken снова для проверки статуса
-            result = await self.client(functions.auth.ExportLoginTokenRequest(
-                api_id=int(API_ID),
-                api_hash=API_HASH,
-                except_ids=[]
-            ))
-            
-            if isinstance(result, types.auth.LoginTokenSuccess):
-                # Успешная авторизация!
-                logger.info("QR-код авторизация успешна")
-                # Проверяем авторизацию еще раз для уверенности
-                if await self.client.is_user_authorized():
-                    # Сохраняем сессию явно
-                    await self.client.disconnect()
-                    await self.client.connect()
-                    # Проверяем еще раз после переподключения
-                    if await self.client.is_user_authorized():
-                        self._is_connected = True
-                        self._qr_login_token = None
-                        self._qr_expires_at = None
-                        
-                        return {
-                            "success": True,
-                            "authorized": True,
-                            "message": "Авторизация успешна через QR-код"
-                        }
-                else:
-                    logger.warning("LoginTokenSuccess получен, но is_user_authorized() вернул False")
-                    return {
-                        "success": False,
-                        "authorized": False,
-                        "message": "QR-код принят, но авторизация еще не завершена. Попробуйте еще раз через несколько секунд."
-                    }
-            elif isinstance(result, types.auth.LoginTokenMigrateTo):
-                # Нужно мигрировать на другой DC
-                logger.info(f"Миграция на DC {result.dc_id}")
-                token = result.token
-                
-                # Импортируем токен на новый DC
-                import_result = await self.client(functions.auth.ImportLoginTokenRequest(token))
-                
-                if isinstance(import_result, types.auth.LoginTokenSuccess):
-                    logger.info("Миграция и авторизация успешны")
-                    # Сохраняем сессию явно
-                    await self.client.disconnect()
-                    await self.client.connect()
-                    # Проверяем авторизацию
-                    if await self.client.is_user_authorized():
-                        self._is_connected = True
-                        self._qr_login_token = None
-                        self._qr_expires_at = None
-                        
-                        return {
-                            "success": True,
-                            "authorized": True,
-                            "message": "Авторизация успешна через QR-код (после миграции)"
-                        }
-                    else:
-                        logger.warning("ImportLoginToken успешен, но is_user_authorized() вернул False")
-                        return {
-                            "success": False,
-                            "authorized": False,
-                            "message": "Миграция завершена, но авторизация еще не завершена. Попробуйте еще раз."
-                        }
-                else:
-                    raise ValueError(f"Ошибка при импорте токена: {type(import_result)}")
-            elif isinstance(result, types.auth.LoginToken):
-                # Токен еще не принят, но проверяем авторизацию на всякий случай
-                if await self.client.is_user_authorized():
-                    logger.info("Обнаружена авторизация при проверке статуса")
-                    self._is_connected = True
-                    self._qr_login_token = None
-                    self._qr_expires_at = None
-                    return {
-                        "success": True,
-                        "authorized": True,
-                        "message": "Авторизация успешна через QR-код"
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "authorized": False,
-                        "message": "QR-код еще не отсканирован. Продолжайте сканирование."
-                    }
-            else:
-                raise ValueError(f"Неожиданный ответ: {type(result)}")
-                
-        except RPCError as e:
-            error_msg = str(e.message)
-            if "AUTH_TOKEN_EXPIRED" in error_msg:
-                raise ValueError("QR-код истек. Сгенерируйте новый через /auth/qr/generate")
-            elif "AUTH_TOKEN_INVALID" in error_msg:
-                raise ValueError("QR-код недействителен. Сгенерируйте новый")
-            elif "AUTH_TOKEN_ALREADY_ACCEPTED" in error_msg:
-                # Токен уже принят, проверяем авторизацию
-                logger.info("Токен уже принят, проверяем авторизацию")
-                # Переподключаемся для обновления состояния
-                await self.client.disconnect()
-                await self.client.connect()
-                if await self.client.is_user_authorized():
-                    self._is_connected = True
-                    self._qr_login_token = None
-                    self._qr_expires_at = None
-                    return {
-                        "success": True,
-                        "authorized": True,
-                        "message": "Авторизация успешна"
-                    }
-                else:
-                    # Возможно, нужно подождать немного
-                    logger.warning("Токен принят, но авторизация еще не завершена")
-                    return {
-                        "success": False,
-                        "authorized": False,
-                        "message": "QR-код принят, но авторизация еще не завершена. Попробуйте еще раз через несколько секунд."
-                    }
-            else:
-                logger.error(f"Ошибка Telegram API: {e.message}")
-                raise ValueError(f"Ошибка Telegram API: {e.message}")
-        except Exception as e:
-            logger.error(f"Неожиданная ошибка при проверке QR-кода: {e}", exc_info=True)
-            raise ValueError(f"Ошибка при проверке QR-кода: {str(e)}")
-
-
-# Совместимость со старым именем класса до обновления роутов.
-TelegramClientManager = MultiSessionManager
-
-# Глобальный экземпляр менеджера
-client_manager = MultiSessionManager()

@@ -38,7 +38,7 @@
   - `sign_in(session_id, phone, code)` — завершить авторизацию, сохранить `client.session.save()` в Supabase.
   - `sign_in_password(session_id, password)` — обработка двухфакторки, обновление StringSession в БД.
   - Обновить остальные методы (`get_dialogs`, `send_message`, и т.д.), чтобы первым аргументом принимали `session_id` и внутри использовали `get_client(session_id)`.
-- **Удалить/отключить старую логику**
+- [x] **Удалить/отключить старую логику**
   - Убрать `init_client()`, QR-методы (`generate_qr_code`, `check_qr_status`).
   - Убрать глобальный `client_manager = TelegramClientManager()` и заменить инициализацией `MultiSessionManager` с `SessionRepo`.
 
