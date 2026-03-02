@@ -45,7 +45,7 @@
 ### 5. Обновление моделей (`app/models.py`)
 - [x] **Удалить неиспользуемые QR-модели**
   - `QRCodeGenerateResponse`, `QRCodeStatusResponse`.
-- **Добавить модели для управления сессиями**
+- [x] **Добавить модели для управления сессиями**
   - `SessionInfo` — данные по одной сессии (`session_id`, `phone`, `is_authorized`, `created_at`, `updated_at`).
   - `SessionListResponse` — список сессий (`success`, `sessions`, `total`).
   - `SessionStatusResponse` — статус одной сессии.

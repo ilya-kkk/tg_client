@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 
@@ -53,6 +54,36 @@ class PasswordRequest(BaseModel):
 class PasswordResponse(BaseModel):
     """Ответ на ввод пароля"""
     success: bool
+    message: str
+
+
+class SessionInfo(BaseModel):
+    """Информация о сессии"""
+    session_id: str
+    phone: Optional[str] = None
+    is_authorized: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class SessionListResponse(BaseModel):
+    """Ответ со списком сессий"""
+    success: bool
+    sessions: List[SessionInfo]
+    total: int
+
+
+class SessionStatusResponse(BaseModel):
+    """Ответ со статусом одной сессии"""
+    success: bool
+    session: Optional[SessionInfo] = None
+    message: str
+
+
+class DeleteSessionResponse(BaseModel):
+    """Ответ на удаление сессии"""
+    success: bool
+    session_id: str
     message: str
 
 
