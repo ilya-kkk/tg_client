@@ -7,7 +7,7 @@
   - Изменить `href` с `/add-account` на `/accounts`
 
 ### 2. Страница «Аккаунты» — список аккаунтов
-- [ ] **Создать компонент страницы** `FrontEnd/app/(dashboard)/accounts/page.tsx` (клиентский, `"use client"`)
+- [x] **Создать компонент страницы** `FrontEnd/app/(dashboard)/accounts/page.tsx` (клиентский, `"use client"`)
   - При загрузке: `GET http://localhost:8000/sessions` → показать список авторизованных сессий (`is_authorized === true`)
   - Для каждой сессии дополнительно запросить `GET http://localhost:8000/sessions/{session_id}/account/me` → получить `first_name`, `last_name`, `username`, `phone`, `photo` (base64/url)
   - Отображать аккаунты в виде карточек:
@@ -17,7 +17,7 @@
     - Username (`@username`, если есть)
   - Сверху над карточками — кнопка «Добавить аккаунт»
   - Состояния: загрузка (скелетон или спиннер), пустой список («Нет аккаунтов»), ошибка
-- [ ] **Константа API_BASE** = `http://localhost:8000` вынесена в начало файла (не хардкодить в каждом fetch)
+- [x] **Константа API_BASE** = `http://localhost:8000` вынесена в начало файла (не хардкодить в каждом fetch)
 
 ### 3. Модальное окно добавления аккаунта
 - [ ] **Создать компонент** `FrontEnd/app/(dashboard)/accounts/AddAccountModal.tsx`

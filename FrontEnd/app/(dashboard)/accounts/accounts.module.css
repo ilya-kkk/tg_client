@@ -1,0 +1,119 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.7rem;
+}
+
+.addButton {
+  border: none;
+  border-radius: 0.6rem;
+  padding: 0.65rem 1rem;
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  color: #082f49;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.addButton:hover {
+  filter: brightness(1.05);
+}
+
+.state,
+.stateError {
+  border: 1px solid #1e293b;
+  border-radius: 0.85rem;
+  background: #0b1222;
+  padding: 1rem;
+}
+
+.stateError p {
+  margin: 0;
+  color: #fca5a5;
+}
+
+.retryButton {
+  margin-top: 0.7rem;
+  border: 1px solid #334155;
+  border-radius: 0.55rem;
+  padding: 0.45rem 0.8rem;
+  background: transparent;
+  color: #e2e8f0;
+  cursor: pointer;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 0.9rem;
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  border: 1px solid #1e293b;
+  border-radius: 1rem;
+  background: #090f1d;
+  padding: 0.9rem;
+}
+
+.avatar {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+.avatarImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.meta {
+  min-width: 0;
+}
+
+.name {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.phone,
+.username {
+  margin: 0.2rem 0 0;
+  font-size: 0.9rem;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .addButton {
+    width: 100%;
+  }
+}
