@@ -23,15 +23,15 @@
 ### 3. Обновление конфигурации приложения
 - [x] **Обновить `app/config.py`**
   - [x] Добавить чтение `SUPABASE_URL` и `SUPABASE_KEY` из окружения.
-  - Удалить/перестать использовать `SESSIONS_DIR` и `SESSION_NAME` (файловые сессии).
+  - [x] Удалить/перестать использовать `SESSIONS_DIR` и `SESSION_NAME` (файловые сессии).
 
 ### 4. Рефакторинг `TelegramClientManager` → мультисессии
 - [x] **Переписать `app/telegram_client.py` под `MultiSessionManager`**
-  - Убрать глобальные поля одной сессии: `self.client`, `self.phone_code_hash`, `self.phone`, `_qr_*`.
-  - Добавить кэши:
-    - `self._clients: Dict[str, TelegramClient]` — авторизованные клиенты по `session_id`.
-    - `self._auth_clients: Dict[str, TelegramClient]` — временные клиенты в процессе авторизации.
-  - Подключить `SessionRepo` для чтения/записи сессий в Supabase.
+  - [x] Убрать глобальные поля одной сессии: `self.client`, `self.phone_code_hash`, `self.phone`, `_qr_*`.
+  - [x] Добавить кэши:
+    - [x] `self._clients: Dict[str, TelegramClient]` — авторизованные клиенты по `session_id`.
+    - [x] `self._auth_clients: Dict[str, TelegramClient]` — временные клиенты в процессе авторизации.
+  - [x] Подключить `SessionRepo` для чтения/записи сессий в Supabase.
 - **Реализовать ключевые методы мультисессий**
   - `get_client(session_id)` — получить/создать Telethon-клиент по StringSession из Supabase.
   - `send_code(session_id, phone)` — создать временный клиент, отправить код, сохранить `phone_code_hash` и `phone` в БД.
