@@ -27,6 +27,8 @@ from telethon.tl.types import (
 from app.config import API_ID, API_HASH
 from app.supabase_client import SessionRepo
 
+AUTH_REQUEST_TIMEOUT_SECONDS = 30
+
 
 class MultiSessionManager:
     """Менеджер Telethon с поддержкой нескольких сессий."""
@@ -56,6 +58,8 @@ class MultiSessionManager:
     async def _ensure_auth_client(self, session_id: str) -> TelegramClient:
         client = self._auth_clients.get(session_id)
         if client:
+            if not client.is_connected():
+                await client.connect()
             return client
 
         client = self._create_client("")
@@ -274,17 +278,28 @@ class MultiSessionManager:
         
         try:
             client = await self._ensure_auth_client(session_id)
-            await client.sign_in(phone, code, phone_code_hash=state["phone_code_hash"])
+            await asyncio.wait_for(
+                client.sign_in(phone, code, phone_code_hash=state["phone_code_hash"]),
+                timeout=AUTH_REQUEST_TIMEOUT_SECONDS,
+            )
             self._clients[session_id] = client
             self._auth_clients.pop(session_id, None)
             self._authorized_sessions.add(session_id)
             state["phone_code_hash"] = ""
-            self._get_session_repo().save_authorized(session_id, client.session.save())
+            await asyncio.to_thread(
+                self._get_session_repo().save_authorized,
+                session_id,
+                client.session.save(),
+            )
             
             return {
                 "success": True,
                 "message": "Авторизация успешна"
             }
+        except asyncio.TimeoutError:
+            raise ValueError(
+                "Таймаут подтверждения кода. Проверьте интернет/прокси и повторите попытку."
+            )
         except SessionPasswordNeededError:
             return {
                 "success": False,

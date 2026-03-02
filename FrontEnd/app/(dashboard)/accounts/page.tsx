@@ -103,6 +103,8 @@ export default function AccountsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [openMenuSessionId, setOpenMenuSessionId] = useState<string | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
 
   const loadAccounts = useCallback(async () => {
     setLoading(true);
@@ -161,6 +163,27 @@ export default function AccountsPage() {
     [accounts]
   );
 
+  const deleteSession = useCallback(async (sessionId: string) => {
+    setError(null);
+    setDeletingSessionId(sessionId);
+    setOpenMenuSessionId(null);
+
+    try {
+      await fetchJson<{ success: boolean; message: string }>(`${API_BASE}/sessions/${sessionId}`, {
+        method: "DELETE"
+      });
+      await loadAccounts();
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setError(e.message);
+      } else {
+        setError("Не удалось удалить аккаунт");
+      }
+    } finally {
+      setDeletingSessionId(null);
+    }
+  }, [loadAccounts]);
+
   return (
     <section className={styles.page}>
       <div className={styles.header}>
@@ -216,6 +239,36 @@ export default function AccountsPage() {
                   <p className={styles.username}>
                     {account.username ? `@${account.username}` : "Без username"}
                   </p>
+                </div>
+
+                <div className={styles.menuWrap}>
+                  <button
+                    type="button"
+                    className={styles.menuButton}
+                    aria-label="Меню аккаунта"
+                    onClick={() =>
+                      setOpenMenuSessionId((current) =>
+                        current === account.session_id ? null : account.session_id
+                      )
+                    }
+                    disabled={deletingSessionId === account.session_id}
+                  >
+                    ⋯
+                  </button>
+
+                  {openMenuSessionId === account.session_id && (
+                    <div className={styles.menu} role="menu">
+                      <button
+                        type="button"
+                        className={styles.menuItemDanger}
+                        role="menuitem"
+                        onClick={() => void deleteSession(account.session_id)}
+                        disabled={deletingSessionId === account.session_id}
+                      >
+                        {deletingSessionId === account.session_id ? "Удаление..." : "Удалить"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               </article>
             );

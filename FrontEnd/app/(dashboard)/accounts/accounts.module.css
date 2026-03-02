@@ -60,6 +60,7 @@
 }
 
 .card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.9rem;
@@ -90,6 +91,7 @@
 
 .meta {
   min-width: 0;
+  flex: 1;
 }
 
 .name {
@@ -105,6 +107,56 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.menuWrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.menuButton {
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid #334155;
+  border-radius: 0.5rem;
+  background: #0f172a;
+  color: #cbd5e1;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.menuButton:hover {
+  border-color: #475569;
+  background: #111c33;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  min-width: 9rem;
+  padding: 0.35rem;
+  border: 1px solid #1e293b;
+  border-radius: 0.6rem;
+  background: #0b1222;
+  box-shadow: 0 10px 22px rgba(2, 6, 23, 0.45);
+  z-index: 10;
+}
+
+.menuItemDanger {
+  width: 100%;
+  border: none;
+  border-radius: 0.45rem;
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+  background: transparent;
+  color: #fca5a5;
+  cursor: pointer;
+}
+
+.menuItemDanger:hover {
+  background: rgba(127, 29, 29, 0.3);
 }
 
 @media (max-width: 640px) {

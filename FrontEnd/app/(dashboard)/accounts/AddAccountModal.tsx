@@ -23,6 +23,7 @@ interface VerifyResponse extends ApiMessageResponse {
 
 type Step = 1 | 2 | 3;
 type LoadingAction = "send_code" | "verify_code" | "password" | null;
+const VERIFY_TIMEOUT_MS = 30000;
 
 async function parseApiError(response: Response): Promise<string> {
   const errorBody = await response.json().catch(() => null);
@@ -132,12 +133,15 @@ export default function AddAccountModal({
 
     setError(null);
     setLoadingAction("verify_code");
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
 
     try {
       const response = await fetch(`${API_BASE}/sessions/${sessionId}/auth/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, code })
+        body: JSON.stringify({ phone, code }),
+        signal: controller.signal
       });
 
       if (!response.ok) {
@@ -145,19 +149,24 @@ export default function AddAccountModal({
       }
 
       const data = (await response.json()) as VerifyResponse;
-      if (!data.success) {
-        throw new Error(data.message || "Не удалось подтвердить код");
-      }
-
       if (data.password_required) {
         setStep(3);
         setPassword("");
         return;
       }
 
+      if (!data.success) {
+        throw new Error(data.message || "Не удалось подтвердить код");
+      }
+
       await Promise.resolve(onSuccess());
       onClose();
     } catch (e: unknown) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setError("Сервер долго отвечает при подтверждении кода. Попробуйте снова.");
+        setCodeSubmitted(false);
+        return;
+      }
       if (e instanceof Error) {
         setError(e.message);
       } else {
@@ -165,6 +174,7 @@ export default function AddAccountModal({
       }
       setCodeSubmitted(false);
     } finally {
+      clearTimeout(timeoutId);
       setLoadingAction(null);
     }
   }
