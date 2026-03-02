@@ -18,7 +18,7 @@
   - [x] `upsert(session_id, ...)` — создать/обновить запись.
   - [x] `delete(session_id)` — удалить сессию.
   - [x] `save_auth_state(session_id, phone, phone_code_hash)` — сохранить состояние после отправки кода.
-  - `save_authorized(session_id, string_session)` — сохранить авторизованную StringSession.
+  - [x] `save_authorized(session_id, string_session)` — сохранить авторизованную StringSession.
 
 ### 3. Обновление конфигурации приложения
 - [x] **Обновить `app/config.py`**
