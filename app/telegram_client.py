@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import (
     SessionPasswordNeededError,
     PhoneCodeInvalidError,
@@ -23,7 +24,7 @@ from telethon.tl.types import (
     DocumentAttributeAudio,
     DocumentAttributeSticker,
 )
-from app.config import API_ID, API_HASH, SESSIONS_DIR, SESSION_NAME
+from app.config import API_ID, API_HASH
 
 
 class TelegramClientManager:
@@ -45,10 +46,8 @@ class TelegramClientManager:
         if not API_ID or not API_HASH:
             raise ValueError("API_ID и API_HASH должны быть установлены")
         
-        session_path = SESSIONS_DIR / SESSION_NAME
-        
         self.client = TelegramClient(
-            str(session_path),
+            StringSession(""),
             int(API_ID),
             API_HASH
         )
