@@ -15,3 +15,15 @@ PROXY_URL = os.getenv("PROXY_URL", None)
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+
+
+def _parse_cors_origins(raw_value: str | None) -> list[str]:
+    """Парсит CORS origins из строки вида 'http://a,http://b'."""
+    if not raw_value:
+        return ["*"]
+
+    origins = [origin.strip() for origin in raw_value.split(",") if origin.strip()]
+    return origins or ["*"]
+
+
+CORS_ALLOW_ORIGINS = _parse_cors_origins(os.getenv("CORS_ALLOW_ORIGINS"))

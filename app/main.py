@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from contextlib import asynccontextmanager
 from app.models import (
@@ -106,6 +107,7 @@ from app.models import (
 from app.supabase_client import SessionRepo
 from app.telegram_client import MultiSessionManager
 import logging
+from app.config import CORS_ALLOW_ORIGINS
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -176,6 +178,14 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     openapi_tags=tags_metadata,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_credentials="*" not in CORS_ALLOW_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
