@@ -52,7 +52,7 @@
   - `DeleteSessionResponse` — результат удаления сессии.
 
 ### 6. Рефакторинг маршрутов FastAPI (`app/main.py`)
-- **Инициализация в `lifespan`**
+- [x] **Инициализация в `lifespan`**
   - Создать экземпляры `SessionRepo` и `MultiSessionManager` при запуске приложения.
   - Убрать вызовы `init_client()` и проверки глобальной авторизации.
 - **Перенести все рабочие ручки под `/sessions/{session_id}`**

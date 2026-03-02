@@ -108,6 +108,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 client_manager: MultiSessionManager | None = None
+session_repo: SessionRepo | None = None
 
 
 tags_metadata = [
@@ -149,14 +150,14 @@ tags_metadata = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global client_manager
+    global client_manager, session_repo
 
     # При старте приложения
-    try:
-        logger.info("Инициализация MultiSessionManager...")
-        client_manager = MultiSessionManager(session_repo=SessionRepo())
-    except Exception as e:
-        logger.error(f"Ошибка инициализации клиента: {e}")
+    logger.info("Инициализация SessionRepo и MultiSessionManager...")
+    session_repo = SessionRepo()
+    client_manager = MultiSessionManager(session_repo=session_repo)
+    app.state.session_repo = session_repo
+    app.state.client_manager = client_manager
     
     yield
     
