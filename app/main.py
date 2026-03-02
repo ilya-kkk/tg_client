@@ -184,10 +184,20 @@ app = FastAPI(
 async def root():
     """Корневой endpoint"""
     authorized = client_manager.is_connected() if client_manager is not None else False
+    supabase_status = "unavailable"
+    if session_repo is not None:
+        try:
+            # Быстрый запрос для проверки доступности Supabase.
+            session_repo.list_all()
+            supabase_status = "ok"
+        except Exception as e:
+            logger.warning("Supabase health-check failed: %s", e)
+
     return {
         "message": "Telegram REST API",
         "status": "running",
-        "authorized": authorized
+        "authorized": authorized,
+        "supabase": supabase_status,
     }
 
 
