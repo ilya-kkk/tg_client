@@ -16,7 +16,7 @@
   - [x] `get(session_id)` — получить одну сессию.
   - [x] `list_all()` — вернуть список всех сессий.
   - [x] `upsert(session_id, ...)` — создать/обновить запись.
-  - `delete(session_id)` — удалить сессию.
+  - [x] `delete(session_id)` — удалить сессию.
   - `save_auth_state(session_id, phone, phone_code_hash)` — сохранить состояние после отправки кода.
   - `save_authorized(session_id, string_session)` — сохранить авторизованную StringSession.
 
