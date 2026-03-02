@@ -78,6 +78,17 @@ services:
     networks:
       - app-network
 
+  frontend:
+    build: ./FrontEnd
+    container_name: tg_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - tg_api
+    networks:
+      - app-network
+
   proxy:
     image: ghcr.io/sagernet/sing-box:latest
     container_name: tg_proxy
