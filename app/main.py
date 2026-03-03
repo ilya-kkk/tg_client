@@ -167,8 +167,8 @@ tags_metadata = [
 
 
 async def reaction_jobs_worker() -> None:
-    """Фоновый цикл, который поддерживает слушатели активных кампаний."""
-    poll_interval_seconds = 20
+    """Фоновый цикл, который раз в минуту обрабатывает новые сообщения по активным кампаниям."""
+    poll_interval_seconds = 60
     while True:
         try:
             if reaction_jobs_repo is None or client_manager is None:
@@ -183,11 +183,9 @@ async def reaction_jobs_worker() -> None:
             }
 
             for job in active_jobs:
-                await client_manager.ensure_reaction_job_listeners(job)
+                await client_manager.process_reaction_job_poll(job)
 
-            for job_id in list(client_manager._reaction_job_listeners.keys()):
-                if job_id not in active_job_ids:
-                    await client_manager.stop_reaction_job_listeners(job_id)
+            client_manager.cleanup_inactive_reaction_jobs(active_job_ids)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1864,7 +1862,7 @@ async def create_reaction_job(user_id: str, request: ReactionJobCreate):
         payload.setdefault("is_active", True)
         row = reaction_jobs_repo.create(user_id=user_id, payload=payload)
         if client_manager is not None and row.get("is_active"):
-            await client_manager.ensure_reaction_job_listeners(row)
+            await client_manager.process_reaction_job_poll(row)
         return ReactionJobOut(**row)
     except Exception as e:
         logger.error("Ошибка при создании reaction_job: %s", e)
@@ -1903,7 +1901,7 @@ async def update_reaction_job(user_id: str, job_id: str, request: ReactionJobUpd
 
         if client_manager is not None:
             if row.get("is_active"):
-                await client_manager.ensure_reaction_job_listeners(row)
+                await client_manager.process_reaction_job_poll(row)
             else:
                 await client_manager.stop_reaction_job_listeners(str(row.get("id")))
 

@@ -61,6 +61,7 @@ class MultiSessionManager:
         self._reaction_job_listeners: Dict[str, List[ReactionListenerState]] = {}
         self._reaction_job_signatures: Dict[str, str] = {}
         self._reaction_counters: Dict[str, int] = {}
+        self._reaction_last_seen_ids: Dict[str, int] = {}
 
     def _get_session_repo(self) -> SessionRepo:
         if self.session_repo is None:
@@ -3290,6 +3291,74 @@ class MultiSessionManager:
             return next_counter % 3 in {1, 2}
         return False
 
+    def _clear_reaction_job_runtime_state(self, job_id: str) -> None:
+        self._reaction_job_signatures.pop(job_id, None)
+        prefix = f"{job_id}:"
+        for key in list(self._reaction_counters.keys()):
+            if key.startswith(prefix):
+                self._reaction_counters.pop(key, None)
+        for key in list(self._reaction_last_seen_ids.keys()):
+            if key.startswith(prefix):
+                self._reaction_last_seen_ids.pop(key, None)
+
+    def cleanup_inactive_reaction_jobs(self, active_job_ids: set[str]) -> None:
+        known_job_ids = set(self._reaction_job_signatures.keys())
+        known_job_ids.update(key.split(":", 1)[0] for key in self._reaction_counters.keys())
+        known_job_ids.update(key.split(":", 1)[0] for key in self._reaction_last_seen_ids.keys())
+
+        for job_id in known_job_ids:
+            if job_id and job_id not in active_job_ids:
+                self._clear_reaction_job_runtime_state(job_id)
+
+    async def _send_reaction_to_message(
+        self,
+        *,
+        client: TelegramClient,
+        entity: Any,
+        emoji: str,
+        message_id: int,
+        job_id: str,
+        session_id: str,
+        chat_identifier: Union[str, int],
+    ) -> bool:
+        try:
+            if hasattr(client, "send_reaction"):
+                await client.send_reaction(entity, message_id, reaction=emoji)
+            else:
+                await client(
+                    functions.messages.SendReactionRequest(
+                        peer=entity,
+                        msg_id=message_id,
+                        reaction=[types.ReactionEmoji(emoticon=emoji)],
+                        big=False,
+                        add_to_recent=False,
+                    )
+                )
+            return True
+        except FloodWaitError as e:
+            await asyncio.sleep(max(1, e.seconds))
+            return False
+        except (ValueError, RPCError) as e:
+            logger.warning(
+                "Не удалось отправить реакцию: job_id=%s session_id=%s chat=%s message_id=%s error=%s",
+                job_id,
+                session_id,
+                chat_identifier,
+                message_id,
+                e,
+            )
+            return False
+        except Exception as e:
+            logger.warning(
+                "Неожиданная ошибка отправки реакции: job_id=%s session_id=%s chat=%s message_id=%s error=%s",
+                job_id,
+                session_id,
+                chat_identifier,
+                message_id,
+                e,
+            )
+            return False
+
     async def stop_reaction_job_listeners(self, job_id: str) -> None:
         listeners = self._reaction_job_listeners.pop(job_id, [])
         for listener in listeners:
@@ -3298,11 +3367,122 @@ class MultiSessionManager:
             except Exception:
                 # Хендлер уже мог быть удален в другом контексте.
                 continue
-        self._reaction_job_signatures.pop(job_id, None)
-        prefix = f"{job_id}:"
-        for key in list(self._reaction_counters.keys()):
-            if key.startswith(prefix):
-                self._reaction_counters.pop(key, None)
+        self._clear_reaction_job_runtime_state(job_id)
+
+    async def process_reaction_job_poll(self, job: Dict[str, Any]) -> None:
+        job_id = str(job.get("id") or "").strip()
+        if not job_id:
+            return
+
+        if not bool(job.get("is_active")):
+            self._clear_reaction_job_runtime_state(job_id)
+            return
+
+        signature = self._build_reaction_job_signature(job)
+        if self._reaction_job_signatures.get(job_id) != signature:
+            self._clear_reaction_job_runtime_state(job_id)
+            self._reaction_job_signatures[job_id] = signature
+
+        reactions = [str(item).strip() for item in (job.get("reactions") or []) if str(item).strip()]
+        message_frequency = str(job.get("message_frequency") or "every")
+        session_ids = [str(item).strip() for item in (job.get("account_sessions") or []) if str(item).strip()]
+        target_chats = [str(item).strip() for item in (job.get("target_chats") or []) if str(item).strip()]
+
+        if not reactions or not session_ids or not target_chats:
+            return
+
+        for session_id in session_ids:
+            try:
+                client = await self.get_client(session_id)
+            except Exception as e:
+                logger.warning(
+                    "Пропуск session в poll-реакциях: job_id=%s session_id=%s error=%s",
+                    job_id,
+                    session_id,
+                    e,
+                )
+                continue
+
+            for chat_identifier in target_chats:
+                parsed_chat_identifier = self._parse_chat_identifier_for_reactions(chat_identifier)
+                if isinstance(parsed_chat_identifier, str) and not parsed_chat_identifier.strip():
+                    continue
+
+                state_key = f"{job_id}:{session_id}:{parsed_chat_identifier}"
+
+                try:
+                    entity = await client.get_entity(parsed_chat_identifier)
+                except Exception as e:
+                    logger.warning(
+                        "Не удалось получить entity чата в poll-реакциях: job_id=%s session_id=%s chat=%s error=%s",
+                        job_id,
+                        session_id,
+                        parsed_chat_identifier,
+                        e,
+                    )
+                    continue
+
+                last_seen = self._reaction_last_seen_ids.get(state_key)
+                try:
+                    if last_seen is None:
+                        latest = await client.get_messages(entity, limit=1)
+                        if latest:
+                            self._reaction_last_seen_ids[state_key] = max(int(latest[0].id), 0)
+                        continue
+
+                    messages = await client.get_messages(entity, min_id=last_seen, limit=50)
+                except Exception as e:
+                    logger.warning(
+                        "Не удалось получить новые сообщения в poll-реакциях: job_id=%s session_id=%s chat=%s error=%s",
+                        job_id,
+                        session_id,
+                        parsed_chat_identifier,
+                        e,
+                    )
+                    continue
+
+                if not messages:
+                    continue
+
+                fresh_messages = [
+                    message for message in messages
+                    if getattr(message, "id", None) is not None and int(message.id) > last_seen
+                ]
+                if not fresh_messages:
+                    continue
+
+                fresh_messages.sort(key=lambda message: int(message.id))
+                newest_id = last_seen
+
+                for message in fresh_messages:
+                    message_id = int(message.id)
+                    newest_id = max(newest_id, message_id)
+                    if getattr(message, "out", False):
+                        continue
+                    if not self._should_react(state_key, message_frequency):
+                        continue
+
+                    emoji = random.choice(reactions)
+                    sent = await self._send_reaction_to_message(
+                        client=client,
+                        entity=entity,
+                        emoji=emoji,
+                        message_id=message_id,
+                        job_id=job_id,
+                        session_id=session_id,
+                        chat_identifier=parsed_chat_identifier,
+                    )
+                    if sent:
+                        logger.info(
+                            "Поставлена реакция в poll-режиме: job_id=%s session_id=%s chat=%s message_id=%s emoji=%s",
+                            job_id,
+                            session_id,
+                            parsed_chat_identifier,
+                            message_id,
+                            emoji,
+                        )
+
+                self._reaction_last_seen_ids[state_key] = newest_id
 
     async def react_to_new_messages(
         self,
@@ -3346,12 +3526,46 @@ class MultiSessionManager:
                 return
             emoji = random.choice(reactions)
             try:
-                await client.send_reaction(entity, event.message.id, reaction=emoji)
+                logger.info(
+                    "Сработал listener авто-реакции: job_id=%s session_id=%s chat=%s message_id=%s",
+                    job_id,
+                    session_id,
+                    parsed_chat_identifier,
+                    event.message.id,
+                )
+                if hasattr(client, "send_reaction"):
+                    await client.send_reaction(entity, event.message.id, reaction=emoji)
+                else:
+                    await client(
+                        functions.messages.SendReactionRequest(
+                            peer=entity,
+                            msg_id=event.message.id,
+                            reaction=[types.ReactionEmoji(emoticon=emoji)],
+                            big=False,
+                            add_to_recent=False,
+                        )
+                    )
             except FloodWaitError as e:
                 await asyncio.sleep(max(1, e.seconds))
-            except (ValueError, RPCError):
+            except (ValueError, RPCError) as e:
+                logger.warning(
+                    "Не удалось отправить реакцию: job_id=%s session_id=%s chat=%s message_id=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_chat_identifier,
+                    event.message.id,
+                    e,
+                )
                 return
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "Неожиданная ошибка отправки реакции: job_id=%s session_id=%s chat=%s message_id=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_chat_identifier,
+                    event.message.id,
+                    e,
+                )
                 return
 
         client.add_event_handler(_handler, events.NewMessage(chats=entity))
