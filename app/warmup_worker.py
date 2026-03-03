@@ -437,11 +437,15 @@ class WarmupWorker:
             )
             return False
 
-    async def _warmup_join_channel(self, session_id: str, job: dict) -> None:
-        telethon = self._load_telethon()
-        if telethon is None:
-            return
+    async def warmup_join_channel(self, session_id: str, channel: str) -> bool:
+        """Подписывается на канал через JoinChannelRequest."""
+        return await self._run_warmup_join_channel(
+            session_id=session_id,
+            channel=channel,
+            job_id="",
+        )
 
+    async def _warmup_join_channel(self, session_id: str, job: dict) -> None:
         target_channel = self._pick_target_channel(job)
         if not target_channel:
             logger.debug(
@@ -450,14 +454,26 @@ class WarmupWorker:
             )
             return
 
-        client = await self._get_session_client(session_id, job)
+        await self._run_warmup_join_channel(
+            session_id=session_id,
+            channel=target_channel,
+            job_id=self._get_job_id(job),
+        )
+
+    async def _run_warmup_join_channel(self, session_id: str, channel: str, job_id: str) -> bool:
+        telethon = self._load_telethon()
+        if telethon is None:
+            return False
+
+        client = await self._get_session_client(session_id, {"id": job_id} if job_id else {})
         if client is None:
-            return
+            return False
 
         functions = telethon["functions"]
         RPCError = telethon["RPCError"]
         UserAlreadyParticipantError = telethon["UserAlreadyParticipantError"]
-        channel_identifier = self._parse_chat_identifier(target_channel)
+        normalized_channel = self._normalize_chat_identifier(channel)
+        channel_identifier = self._parse_chat_identifier(normalized_channel)
 
         try:
             entity = await client.get_input_entity(channel_identifier)
@@ -469,43 +485,47 @@ class WarmupWorker:
             )
             logger.info(
                 "Warmup join_channel выполнен: job_id=%s session_id=%s channel=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_channel,
+                normalized_channel,
             )
+            return True
         except asyncio.CancelledError:
             raise
         except UserAlreadyParticipantError:
             logger.debug(
                 "Warmup join_channel: уже подписан, пропуск: job_id=%s session_id=%s channel=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_channel,
+                normalized_channel,
             )
+            return False
         except RPCError as e:
             if "already" in str(e).lower() and "participant" in str(e).lower():
                 logger.debug(
                     "Warmup join_channel: уже подписан (RPC), пропуск: job_id=%s session_id=%s channel=%s",
-                    self._get_job_id(job),
+                    job_id,
                     session_id,
-                    target_channel,
+                    normalized_channel,
                 )
-                return
+                return False
             logger.warning(
                 "Ошибка warmup join_channel: job_id=%s session_id=%s channel=%s error=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_channel,
+                normalized_channel,
                 e,
             )
+            return False
         except Exception as e:
             logger.warning(
                 "Ошибка warmup join_channel: job_id=%s session_id=%s channel=%s error=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_channel,
+                normalized_channel,
                 e,
             )
+            return False
 
     async def _warmup_view_story(self, session_id: str, job: dict) -> None:
         telethon = self._load_telethon()

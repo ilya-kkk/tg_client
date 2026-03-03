@@ -310,6 +310,135 @@ def test_warmup_react_to_message_gets_latest_messages_and_sends_random_reaction(
     asyncio.run(scenario())
 
 
+def test_warmup_join_channel_joins_via_join_channel_request(monkeypatch: pytest.MonkeyPatch):
+    class StubManager:
+        def __init__(self, client):
+            self.client = client
+            self.called_with: str | None = None
+
+        async def get_client(self, session_id: str):
+            self.called_with = session_id
+            return self.client
+
+    class DummyRPCError(Exception):
+        pass
+
+    class DummyUserAlreadyParticipantError(DummyRPCError):
+        pass
+
+    class DummyJoinChannelRequest:
+        def __init__(self, channel):
+            self.channel = channel
+
+    class StubClient:
+        def __init__(self):
+            self.last_entity = None
+            self.requests = []
+
+        async def get_input_entity(self, entity):
+            self.last_entity = entity
+            return f"peer:{entity}"
+
+        async def __call__(self, request):
+            self.requests.append(request)
+            return SimpleNamespace(ok=True)
+
+    async def scenario():
+        client = StubClient()
+        manager = StubManager(client)
+        worker = WarmupWorker(client_manager=manager)
+
+        monkeypatch.setattr(
+            worker,
+            "_load_telethon",
+            lambda: {
+                "functions": SimpleNamespace(
+                    channels=SimpleNamespace(JoinChannelRequest=DummyJoinChannelRequest)
+                ),
+                "RPCError": DummyRPCError,
+                "UserAlreadyParticipantError": DummyUserAlreadyParticipantError,
+            },
+        )
+
+        joined = await worker.warmup_join_channel(
+            session_id="session-1",
+            channel="https://t.me/test_channel",
+        )
+
+        assert joined is True
+        assert manager.called_with == "session-1"
+        assert client.last_entity == "@test_channel"
+        assert len(client.requests) == 1
+        assert isinstance(client.requests[0], DummyJoinChannelRequest)
+        assert client.requests[0].channel == "peer:@test_channel"
+
+    asyncio.run(scenario())
+
+
+def test_warmup_join_channel_skips_if_already_subscribed(monkeypatch: pytest.MonkeyPatch):
+    class StubManager:
+        def __init__(self, client):
+            self.client = client
+            self.called_with: str | None = None
+
+        async def get_client(self, session_id: str):
+            self.called_with = session_id
+            return self.client
+
+    class DummyRPCError(Exception):
+        pass
+
+    class DummyUserAlreadyParticipantError(DummyRPCError):
+        pass
+
+    class DummyJoinChannelRequest:
+        def __init__(self, channel):
+            self.channel = channel
+
+    class StubClient:
+        def __init__(self):
+            self.last_entity = None
+            self.requests = []
+
+        async def get_input_entity(self, entity):
+            self.last_entity = entity
+            return f"peer:{entity}"
+
+        async def __call__(self, request):
+            self.requests.append(request)
+            raise DummyUserAlreadyParticipantError("already participant")
+
+    async def scenario():
+        client = StubClient()
+        manager = StubManager(client)
+        worker = WarmupWorker(client_manager=manager)
+
+        monkeypatch.setattr(
+            worker,
+            "_load_telethon",
+            lambda: {
+                "functions": SimpleNamespace(
+                    channels=SimpleNamespace(JoinChannelRequest=DummyJoinChannelRequest)
+                ),
+                "RPCError": DummyRPCError,
+                "UserAlreadyParticipantError": DummyUserAlreadyParticipantError,
+            },
+        )
+
+        joined = await worker.warmup_join_channel(
+            session_id="session-1",
+            channel="@test_channel",
+        )
+
+        assert joined is False
+        assert manager.called_with == "session-1"
+        assert client.last_entity == "@test_channel"
+        assert len(client.requests) == 1
+        assert isinstance(client.requests[0], DummyJoinChannelRequest)
+
+    asyncio.run(scenario())
+
+
 def test_warmup_update_status_switches_online_and_offline(monkeypatch: pytest.MonkeyPatch):
     class StubManager:
         def __init__(self, client):
