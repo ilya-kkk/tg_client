@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from app.models import (
     LoginRequest,
     LoginResponse,
@@ -129,6 +129,7 @@ from app.telegram_client import MultiSessionManager
 import logging
 from app.config import CORS_ALLOW_ORIGINS
 from app.warmup_config import WARMUP_MODES
+from app.warmup_worker import WarmupWorker
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -140,7 +141,8 @@ reaction_jobs_repo: ReactionJobsRepo | None = None
 warmup_jobs_repo: WarmupJobsRepo | None = None
 reaction_jobs_task: asyncio.Task | None = None
 warmup_jobs_task: asyncio.Task | None = None
-warmup_job_tasks: dict[str, asyncio.Task] = {}
+warmup_worker = WarmupWorker()
+warmup_job_tasks = warmup_worker.running
 
 WARMUP_MONITOR_INTERVAL_ENV = "WARMUP_MONITOR_INTERVAL_MINUTES"
 DEFAULT_WARMUP_MONITOR_INTERVAL_MINUTES = 5
@@ -233,54 +235,20 @@ def _get_warmup_job_id(job: dict) -> str:
     return str(job.get("id") or "").strip()
 
 
-async def run_warmup_job_worker(job: dict) -> None:
-    """Минимальный фоновый цикл одной кампании прогрева."""
-    job_id = _get_warmup_job_id(job)
-    mode = str(job.get("mode") or "normal")
-    mode_config = WARMUP_MODES.get(mode) or WARMUP_MODES["normal"]
-    sleep_seconds = max(5, int(mode_config["min_delay_sec"]))
-
-    logger.info("Запущен warmup-воркер: job_id=%s mode=%s", job_id, mode)
-    try:
-        # Детальная логика прогрева будет расширена в отдельном WarmupWorker.
-        while True:
-            await asyncio.sleep(sleep_seconds)
-    except asyncio.CancelledError:
-        logger.info("Остановлен warmup-воркер: job_id=%s", job_id)
-        raise
-
-
 def ensure_warmup_job_worker_started(job: dict) -> None:
     job_id = _get_warmup_job_id(job)
     if not job_id:
         return
 
-    existing_task = warmup_job_tasks.get(job_id)
-    if existing_task is not None and not existing_task.done():
-        return
-
-    if existing_task is not None and existing_task.done():
-        warmup_job_tasks.pop(job_id, None)
-
-    warmup_job_tasks[job_id] = asyncio.create_task(
-        run_warmup_job_worker(job),
-        name=f"warmup-job-{job_id}",
-    )
+    warmup_worker.start(job)
 
 
 async def stop_warmup_job_worker(job_id: str) -> None:
-    task = warmup_job_tasks.pop(job_id, None)
-    if task is None:
-        return
-
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    await warmup_worker.stop(job_id)
 
 
 async def stop_all_warmup_job_workers() -> None:
-    for job_id in list(warmup_job_tasks.keys()):
-        await stop_warmup_job_worker(job_id)
+    await warmup_worker.stop_all()
 
 
 async def sync_warmup_job_workers(active_jobs: list[dict]) -> None:
