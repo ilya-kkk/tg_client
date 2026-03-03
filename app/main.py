@@ -2045,6 +2045,10 @@ async def update_warmup_job(user_id: str, job_id: str, request: WarmupJobUpdate)
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Кампания не найдена",
             )
+
+        if payload.get("is_active") is False:
+            await stop_warmup_job_worker(_get_warmup_job_id(row) or job_id)
+
         return WarmupJobOut(**row)
     except HTTPException:
         raise

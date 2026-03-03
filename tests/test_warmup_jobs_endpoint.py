@@ -227,6 +227,15 @@ def test_update_warmup_job_updates_mode_and_recalculates_actions_per_day(monkeyp
 
 def test_update_warmup_job_toggles_is_active(monkeypatch: pytest.MonkeyPatch):
     now = datetime.now(timezone.utc)
+    stopped_job_ids: list[str] = []
+    started_jobs: list[dict] = []
+
+    async def fake_stop_warmup_job_worker(job_id: str) -> None:
+        stopped_job_ids.append(job_id)
+
+    def fake_ensure_warmup_job_worker_started(job: dict) -> None:
+        started_jobs.append(job)
+
     repo = StubWarmupJobsUpdateRepo(
         row_to_return={
             "id": "job-1",
@@ -243,10 +252,14 @@ def test_update_warmup_job_toggles_is_active(monkeypatch: pytest.MonkeyPatch):
         }
     )
     monkeypatch.setattr(main, "warmup_jobs_repo", repo)
+    monkeypatch.setattr(main, "stop_warmup_job_worker", fake_stop_warmup_job_worker)
+    monkeypatch.setattr(main, "ensure_warmup_job_worker_started", fake_ensure_warmup_job_worker_started)
 
     result = asyncio.run(main.update_warmup_job("user-1", "job-1", WarmupJobUpdate(is_active=False)))
 
     assert repo.received_payload == {"is_active": False}
+    assert stopped_job_ids == ["job-1"]
+    assert started_jobs == []
     assert result.is_active is False
 
 
