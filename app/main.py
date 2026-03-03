@@ -313,6 +313,7 @@ async def lifespan(app: FastAPI):
     app.state.reaction_jobs_repo = reaction_jobs_repo
     app.state.warmup_jobs_repo = warmup_jobs_repo
     app.state.client_manager = client_manager
+    warmup_worker.set_client_manager(client_manager)
     warmup_job_tasks.clear()
     reaction_jobs_task = asyncio.create_task(reaction_jobs_worker())
     warmup_jobs_task = asyncio.create_task(warmup_jobs_worker())
@@ -336,6 +337,7 @@ async def lifespan(app: FastAPI):
             pass
         warmup_jobs_task = None
     await stop_all_warmup_job_workers()
+    warmup_worker.set_client_manager(None)
     if client_manager is not None:
         await client_manager.disconnect()
 
