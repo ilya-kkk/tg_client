@@ -302,14 +302,6 @@ export default function ChannelsParserPage() {
             </button>
             <button
               type="button"
-              className={styles.secondaryButton}
-              onClick={() => void saveToDatabase()}
-              disabled={loading || saving || items.length === 0}
-            >
-              {saving ? "Сохранение..." : "Сохранить в базу"}
-            </button>
-            <button
-              type="button"
               className={styles.ghostButton}
               onClick={exportCsv}
               disabled={items.length === 0}
