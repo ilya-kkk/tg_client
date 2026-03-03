@@ -507,7 +507,7 @@ async def get_chats(session_id: str, limit: int = 100):
         )
     
     try:
-        dialogs = await client_manager.get_dialogs(limit=limit)
+        dialogs = await client_manager.get_dialogs(session_id=session_id, limit=limit)
         chats = [ChatInfo(**dialog) for dialog in dialogs]
         
         return ChatsResponse(
@@ -1860,7 +1860,11 @@ async def create_reaction_job(user_id: str, request: ReactionJobCreate):
             detail="Хранилище reaction_jobs не инициализировано",
         )
     try:
-        row = reaction_jobs_repo.create(user_id=user_id, payload=request.model_dump())
+        payload = request.model_dump()
+        payload.setdefault("is_active", True)
+        row = reaction_jobs_repo.create(user_id=user_id, payload=payload)
+        if client_manager is not None and row.get("is_active"):
+            await client_manager.ensure_reaction_job_listeners(row)
         return ReactionJobOut(**row)
     except Exception as e:
         logger.error("Ошибка при создании reaction_job: %s", e)

@@ -3,6 +3,14 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
+const STORAGE_USER_ID_KEY = "tg_client_user_id";
+
+interface LoginApiResponse {
+  success: boolean;
+  message: string;
+  user_id: string;
+}
+
 export default function LoginPage() {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("admin1234");
@@ -26,8 +34,10 @@ export default function LoginPage() {
         throw new Error(data?.detail ?? "Ошибка авторизации");
       }
 
+      const data = (await response.json()) as LoginApiResponse;
       if (typeof window !== "undefined") {
         window.localStorage.setItem("isAuthorized", "1");
+        window.localStorage.setItem(STORAGE_USER_ID_KEY, data.user_id);
       }
 
       router.push("/home");
@@ -81,4 +91,3 @@ export default function LoginPage() {
     </main>
   );
 }
-

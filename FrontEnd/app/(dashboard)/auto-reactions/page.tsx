@@ -5,6 +5,7 @@ import styles from "./auto-reactions.module.css";
 
 const API_BASE = "http://localhost:8000";
 const STORAGE_USER_ID_KEY = "tg_client_user_id";
+const CHATS_FETCH_LIMIT = 1000;
 const POPULAR_REACTIONS = ["👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "💯", "🎉"] as const;
 
 type MessageFrequency = "every" | "1/2" | "1/3" | "2/3";
@@ -46,6 +47,19 @@ interface AccountInfoResponse {
   account: AccountInfo;
 }
 
+interface ChatInfo {
+  id: number;
+  name: string;
+  type: string | null;
+  username: string | null;
+}
+
+interface ChatsResponse {
+  success: boolean;
+  chats: ChatInfo[];
+  total: number;
+}
+
 interface SessionOption {
   session_id: string;
   label: string;
@@ -64,7 +78,12 @@ interface JobFormState {
   account_sessions: string[];
   reactions: string[];
   message_frequency: MessageFrequency;
-  target_chats_text: string;
+  target_chats: string[];
+}
+
+interface ChatOption {
+  value: string;
+  label: string;
 }
 
 const INITIAL_FORM: JobFormState = {
@@ -72,7 +91,7 @@ const INITIAL_FORM: JobFormState = {
   account_sessions: [],
   reactions: ["👍"],
   message_frequency: "every",
-  target_chats_text: ""
+  target_chats: []
 };
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -116,20 +135,13 @@ function buildAccountLabel(account: AccountInfo | null, fallbackPhone: string | 
   return sessionId;
 }
 
-function parseTargetChats(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-}
-
 function toForm(job: ReactionJob): JobFormState {
   return {
     name: job.name,
     account_sessions: [...job.account_sessions],
     reactions: [...job.reactions],
     message_frequency: job.message_frequency,
-    target_chats_text: job.target_chats.join("\n")
+    target_chats: [...job.target_chats]
   };
 }
 
@@ -147,6 +159,9 @@ export default function AutoReactionsPage() {
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingJob, setEditingJob] = useState<ReactionJob | null>(null);
   const [form, setForm] = useState<JobFormState>(INITIAL_FORM);
+  const [availableChats, setAvailableChats] = useState<ChatOption[]>([]);
+  const [loadingChats, setLoadingChats] = useState<boolean>(false);
+  const [chatsError, setChatsError] = useState<string | null>(null);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(STORAGE_USER_ID_KEY);
@@ -211,6 +226,76 @@ export default function AutoReactionsPage() {
     }
   }, []);
 
+  const loadAvailableChats = useCallback(async (sessionIds: string[]) => {
+    if (sessionIds.length === 0) {
+      setAvailableChats([]);
+      setChatsError(null);
+      setLoadingChats(false);
+      setForm((prev) => ({ ...prev, target_chats: [] }));
+      return;
+    }
+
+    setLoadingChats(true);
+    setChatsError(null);
+
+    try {
+      const settled = await Promise.allSettled(
+        sessionIds.map((sessionId) =>
+          fetchJson<ChatsResponse>(
+            `${API_BASE}/sessions/${sessionId}/chats?limit=${CHATS_FETCH_LIMIT}`
+          )
+        )
+      );
+
+      const successItems = settled
+        .filter((entry): entry is PromiseFulfilledResult<ChatsResponse> => entry.status === "fulfilled")
+        .map((entry) => entry.value);
+
+      if (successItems.length === 0) {
+        const firstError = settled.find((entry): entry is PromiseRejectedResult => entry.status === "rejected");
+        throw new Error(firstError?.reason?.message ?? "Не удалось загрузить чаты выбранных аккаунтов");
+      }
+
+      const chatMap = new Map<string, ChatOption>();
+
+      for (const response of successItems) {
+        for (const chat of response.chats) {
+          const value = chat.username ? `@${chat.username}` : String(chat.id);
+          if (chatMap.has(value)) {
+            continue;
+          }
+
+          const safeName = chat.name?.trim() ? chat.name : value;
+          const label = chat.username ? `${safeName} (${value})` : `${safeName} (id: ${chat.id})`;
+          chatMap.set(value, { value, label });
+        }
+      }
+
+      const mergedOptions = Array.from(chatMap.values()).sort((a, b) => a.label.localeCompare(b.label));
+      setAvailableChats(mergedOptions);
+
+      const allowed = new Set(mergedOptions.map((item) => item.value));
+      setForm((prev) => ({
+        ...prev,
+        target_chats: prev.target_chats.filter((chat) => allowed.has(chat))
+      }));
+
+      if (successItems.length !== sessionIds.length) {
+        setChatsError("Часть аккаунтов не удалось загрузить. Показаны доступные чаты.");
+      }
+    } catch (e: unknown) {
+      setAvailableChats([]);
+      setForm((prev) => ({ ...prev, target_chats: [] }));
+      if (e instanceof Error) {
+        setChatsError(e.message);
+      } else {
+        setChatsError("Не удалось загрузить чаты выбранных аккаунтов");
+      }
+    } finally {
+      setLoadingChats(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadSessions();
   }, [loadSessions]);
@@ -241,17 +326,19 @@ export default function AutoReactionsPage() {
     }
     setIsModalOpen(false);
     setEditingJob(null);
+    setAvailableChats([]);
+    setChatsError(null);
+    setLoadingChats(false);
   }, [saving]);
 
   const submitModal = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     if (!userId) {
-      setError("Укажите user_id");
+      setError("Пользователь не определен. Войдите заново.");
       return;
     }
 
-    const targetChats = parseTargetChats(form.target_chats_text);
     if (!form.name.trim()) {
       setError("Введите название кампании");
       return;
@@ -264,23 +351,23 @@ export default function AutoReactionsPage() {
       setError("Выберите хотя бы одну реакцию");
       return;
     }
-    if (targetChats.length === 0) {
-      setError("Добавьте хотя бы один чат");
+    if (form.target_chats.length === 0) {
+      setError("Выберите хотя бы один чат");
       return;
     }
-
-    const payload: ReactionJobPayload = {
-      name: form.name.trim(),
-      account_sessions: form.account_sessions,
-      reactions: form.reactions,
-      message_frequency: form.message_frequency,
-      target_chats: targetChats
-    };
 
     setSaving(true);
     setError(null);
 
     try {
+      const payload: ReactionJobPayload = {
+        name: form.name.trim(),
+        account_sessions: form.account_sessions,
+        reactions: form.reactions,
+        message_frequency: form.message_frequency,
+        target_chats: form.target_chats
+      };
+
       if (editingJob) {
         const updated = await fetchJson<ReactionJob>(
           `${API_BASE}/users/${userId}/reaction-jobs/${editingJob.id}`,
@@ -323,6 +410,18 @@ export default function AutoReactionsPage() {
     });
   }, []);
 
+  const toggleTargetChat = useCallback((chatValue: string) => {
+    setForm((prev) => {
+      const exists = prev.target_chats.includes(chatValue);
+      return {
+        ...prev,
+        target_chats: exists
+          ? prev.target_chats.filter((item) => item !== chatValue)
+          : [...prev.target_chats, chatValue]
+      };
+    });
+  }, []);
+
   const toggleReaction = useCallback((reaction: string) => {
     setForm((prev) => {
       const exists = prev.reactions.includes(reaction);
@@ -336,7 +435,7 @@ export default function AutoReactionsPage() {
 
   const toggleJobActive = useCallback(async (job: ReactionJob) => {
     if (!userId) {
-      setError("Укажите user_id");
+      setError("Пользователь не определен. Войдите заново.");
       return;
     }
 
@@ -368,7 +467,7 @@ export default function AutoReactionsPage() {
 
   const removeJob = useCallback(async (job: ReactionJob) => {
     if (!userId) {
-      setError("Укажите user_id");
+      setError("Пользователь не определен. Войдите заново.");
       return;
     }
 
@@ -397,6 +496,13 @@ export default function AutoReactionsPage() {
 
   const sortedJobs = useMemo(() => [...jobs].sort((a, b) => a.name.localeCompare(b.name)), [jobs]);
 
+  useEffect(() => {
+    if (!isModalOpen) {
+      return;
+    }
+    void loadAvailableChats(form.account_sessions);
+  }, [form.account_sessions, isModalOpen, loadAvailableChats]);
+
   return (
     <section className={styles.page}>
       <div className={styles.header}>
@@ -407,29 +513,6 @@ export default function AutoReactionsPage() {
         <button type="button" className={styles.createButton} onClick={openCreateModal}>
           + Создать кампанию
         </button>
-      </div>
-
-      <div className={styles.userBox}>
-        <label htmlFor="userId" className={styles.label}>User ID</label>
-        <div className={styles.userRow}>
-          <input
-            id="userId"
-            className={styles.input}
-            value={userId}
-            onChange={(event) => setUserId(event.target.value.trim())}
-            placeholder="UUID пользователя Supabase"
-          />
-          <button
-            type="button"
-            className={styles.secondaryButton}
-            onClick={() => {
-              window.localStorage.setItem(STORAGE_USER_ID_KEY, userId);
-              void loadJobs(userId);
-            }}
-          >
-            Применить
-          </button>
-        </div>
       </div>
 
       {loading && (
@@ -443,7 +526,16 @@ export default function AutoReactionsPage() {
       {!loading && error && (
         <div className={styles.errorBox}>
           <p>{error}</p>
-          <button type="button" className={styles.secondaryButton} onClick={() => void loadJobs(userId)}>
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            onClick={() => {
+              if (userId) {
+                void loadJobs(userId);
+              }
+            }}
+            disabled={!userId}
+          >
             Повторить
           </button>
         </div>
@@ -581,21 +673,30 @@ export default function AutoReactionsPage() {
               </div>
 
               <div>
-                <label className={styles.label} htmlFor="target_chats">Чаты для мониторинга</label>
-                <textarea
-                  id="target_chats"
-                  className={styles.textarea}
-                  value={form.target_chats_text}
-                  onChange={(event) =>
-                    setForm((prev) => ({ ...prev, target_chats_text: event.target.value }))
-                  }
-                  placeholder="@username\nt.me/channel_name"
-                  rows={5}
-                />
+                <p className={styles.label}>Чаты для мониторинга</p>
+                {loadingChats && <p className={styles.subtitle}>Загрузка чатов...</p>}
+                {!loadingChats && chatsError && <p className={styles.subtitle}>{chatsError}</p>}
+                {!loadingChats && !chatsError && availableChats.length === 0 && (
+                  <p className={styles.subtitle}>Нет доступных чатов для выбранных аккаунтов.</p>
+                )}
+                {!loadingChats && availableChats.length > 0 && (
+                  <div className={styles.gridOptions}>
+                    {availableChats.map((chat) => (
+                      <label key={chat.value} className={styles.checkboxLabel}>
+                        <input
+                          type="checkbox"
+                          checked={form.target_chats.includes(chat.value)}
+                          onChange={() => toggleTargetChat(chat.value)}
+                        />
+                        <span>{chat.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className={styles.modalActions}>
-                <button type="submit" className={styles.createButton} disabled={saving}>
+                <button type="submit" className={styles.createButton} disabled={saving || loadingChats}>
                   {saving ? "Сохранение..." : "Сохранить"}
                 </button>
                 <button type="button" className={styles.secondaryButton} onClick={closeModal} disabled={saving}>

@@ -33,6 +33,7 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     success: bool
     message: str
+    user_id: str
 
 
 app = FastAPI(title="Logic API", description="Простой backend для авторизации пользователя")
@@ -112,7 +113,7 @@ def login(payload: LoginRequest) -> LoginResponse:
     if payload.password != user["password_hash"]:
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
 
-    return LoginResponse(success=True, message="Успешный вход")
+    return LoginResponse(success=True, message="Успешный вход", user_id=str(user["id"]))
 
 
 @app.get("/health")
@@ -124,4 +125,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

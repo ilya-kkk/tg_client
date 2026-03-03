@@ -11,6 +11,22 @@ interface SessionInfo {
   is_authorized: boolean;
 }
 
+interface AccountInfo {
+  first_name: string | null;
+  last_name: string | null;
+  username: string | null;
+  phone: string | null;
+}
+
+interface AccountInfoResponse {
+  success: boolean;
+  account: AccountInfo;
+}
+
+interface SessionOption extends SessionInfo {
+  account_label: string;
+}
+
 interface SessionsResponse {
   success: boolean;
   sessions: SessionInfo[];
@@ -98,8 +114,32 @@ function download(filename: string, content: string, mimeType: string): void {
   URL.revokeObjectURL(url);
 }
 
+function buildAccountLabel(
+  account: AccountInfo | null,
+  fallbackPhone: string | null,
+  sessionId: string
+): string {
+  if (account) {
+    const fullName = [account.first_name, account.last_name].filter(Boolean).join(" ").trim();
+    if (fullName) {
+      return fullName;
+    }
+    if (account.username) {
+      return `@${account.username}`;
+    }
+    if (account.phone) {
+      return account.phone;
+    }
+  }
+
+  if (fallbackPhone) {
+    return fallbackPhone;
+  }
+  return sessionId;
+}
+
 export default function ChannelsParserPage() {
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [sessions, setSessions] = useState<SessionOption[]>([]);
   const [sessionId, setSessionId] = useState<string>("");
   const [keywordsText, setKeywordsText] = useState<string>("crypto\nmarketing");
   const [limitPerKeyword, setLimitPerKeyword] = useState<number>(20);
@@ -115,9 +155,39 @@ export default function ChannelsParserPage() {
     try {
       const response = await fetchJson<SessionsResponse>(`${API_BASE}/sessions`);
       const authorized = response.sessions.filter((session) => session.is_authorized);
-      setSessions(authorized);
-      if (!sessionId && authorized.length > 0) {
-        setSessionId(authorized[0].session_id);
+
+      const result = await Promise.allSettled(
+        authorized.map(async (session): Promise<SessionOption> => {
+          const accountResponse = await fetchJson<AccountInfoResponse>(
+            `${API_BASE}/sessions/${session.session_id}/account/me`
+          );
+
+          return {
+            ...session,
+            account_label: buildAccountLabel(
+              accountResponse.account,
+              session.phone,
+              session.session_id
+            )
+          };
+        })
+      );
+
+      const withLabels = result.map((entry, index) => {
+        const session = authorized[index];
+        if (entry.status === "fulfilled") {
+          return entry.value;
+        }
+
+        return {
+          ...session,
+          account_label: buildAccountLabel(null, session.phone, session.session_id)
+        };
+      });
+
+      setSessions(withLabels);
+      if (!sessionId && withLabels.length > 0) {
+        setSessionId(withLabels[0].session_id);
       }
     } catch (e: unknown) {
       if (e instanceof Error) {
@@ -246,7 +316,7 @@ export default function ChannelsParserPage() {
               {sessions.length === 0 && <option value="">Нет авторизованных сессий</option>}
               {sessions.map((session) => (
                 <option key={session.session_id} value={session.session_id}>
-                  {session.session_id}
+                  {session.account_label}
                 </option>
               ))}
             </select>

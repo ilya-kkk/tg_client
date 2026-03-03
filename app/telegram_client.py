@@ -1,11 +1,13 @@
 import asyncio
 import base64
 import binascii
+import logging
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import (
@@ -31,6 +33,7 @@ from app.supabase_client import SessionRepo
 
 AUTH_REQUEST_TIMEOUT_SECONDS = 30
 POPULAR_REACTIONS: List[str] = ["👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "💯", "🎉"]
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -3258,6 +3261,12 @@ class MultiSessionManager:
             chat = "@" + chat.removeprefix("t.me/").split("?")[0].strip("/")
         return chat
 
+    def _parse_chat_identifier_for_reactions(self, value: str) -> Union[str, int]:
+        normalized = self._normalize_chat_identifier_for_reactions(value)
+        if re.fullmatch(r"-?\d+", normalized):
+            return int(normalized)
+        return normalized
+
     def _build_reaction_job_signature(self, job: Dict[str, Any]) -> str:
         session_part = ",".join(sorted(job.get("account_sessions") or []))
         chats = [self._normalize_chat_identifier_for_reactions(chat) for chat in (job.get("target_chats") or [])]
@@ -3306,19 +3315,31 @@ class MultiSessionManager:
         if not reactions:
             return None
 
-        normalized_chat = self._normalize_chat_identifier_for_reactions(chat_identifier)
-        if not normalized_chat:
+        parsed_chat_identifier = self._parse_chat_identifier_for_reactions(chat_identifier)
+        if (isinstance(parsed_chat_identifier, str) and not parsed_chat_identifier.strip()):
             return None
 
         try:
             client = await self.get_client(session_id)
-            entity = await client.get_entity(normalized_chat)
-        except ValueError:
+            entity = await client.get_entity(parsed_chat_identifier)
+        except ValueError as e:
+            logger.warning(
+                "Не удалось получить чат для реакций: session_id=%s chat_identifier=%s error=%s",
+                session_id,
+                chat_identifier,
+                e,
+            )
             return None
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "Ошибка инициализации listener для реакций: session_id=%s chat_identifier=%s error=%s",
+                session_id,
+                chat_identifier,
+                e,
+            )
             return None
 
-        counter_key = f"{job_id}:{session_id}:{normalized_chat}"
+        counter_key = f"{job_id}:{session_id}:{parsed_chat_identifier}"
 
         async def _handler(event: events.NewMessage.Event) -> None:
             if not self._should_react(counter_key, message_frequency):
@@ -3338,7 +3359,7 @@ class MultiSessionManager:
             client=client,
             handler=_handler,
             session_id=session_id,
-            chat_identifier=normalized_chat,
+            chat_identifier=str(parsed_chat_identifier),
         )
 
     async def ensure_reaction_job_listeners(self, job: Dict[str, Any]) -> None:
@@ -3379,4 +3400,18 @@ class MultiSessionManager:
         if created:
             self._reaction_job_listeners[job_id] = created
             self._reaction_job_signatures[job_id] = signature
+            logger.info(
+                "Запущены listener'ы авто-реакций: job_id=%s listeners=%s sessions=%s chats=%s",
+                job_id,
+                len(created),
+                len(session_ids),
+                len(target_chats),
+            )
+        else:
+            logger.warning(
+                "Не удалось создать listener'ы авто-реакций: job_id=%s sessions=%s chats=%s",
+                job_id,
+                len(session_ids),
+                len(target_chats),
+            )
     
