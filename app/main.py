@@ -99,12 +99,19 @@ from app.models import (
     PublishChannelPostResponse,
     EditChannelPostResponse,
     DeleteChannelPostsResponse,
+    ChannelsSearchRequest,
+    ChannelsSearchResultItem,
+    ChannelsSearchResponse,
+    SaveParsedChannelsRequest,
+    SaveParsedChannelsResponse,
+    ParsedChannelsListResponse,
+    DeleteParsedChannelsResponse,
     SessionInfo,
     SessionListResponse,
     SessionStatusResponse,
     DeleteSessionResponse,
 )
-from app.supabase_client import SessionRepo
+from app.supabase_client import SessionRepo, ParsedChannelsRepo
 from app.telegram_client import MultiSessionManager
 import logging
 from app.config import CORS_ALLOW_ORIGINS
@@ -114,6 +121,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 client_manager: MultiSessionManager | None = None
 session_repo: SessionRepo | None = None
+parsed_channels_repo: ParsedChannelsRepo | None = None
 
 
 tags_metadata = [
@@ -155,13 +163,15 @@ tags_metadata = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global client_manager, session_repo
+    global client_manager, session_repo, parsed_channels_repo
 
     # При старте приложения
     logger.info("Инициализация SessionRepo и MultiSessionManager...")
     session_repo = SessionRepo()
+    parsed_channels_repo = ParsedChannelsRepo()
     client_manager = MultiSessionManager(session_repo=session_repo)
     app.state.session_repo = session_repo
+    app.state.parsed_channels_repo = parsed_channels_repo
     app.state.client_manager = client_manager
     
     yield
@@ -1594,6 +1604,174 @@ async def delete_channel_posts(session_id: str, request: DeleteChannelPostsReque
         )
     except Exception as e:
         logger.error(f"Ошибка при удалении постов канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/sessions/{session_id}/channels/search",
+    response_model=ChannelsSearchResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def search_channels(session_id: str, request: ChannelsSearchRequest):
+    """
+    Ищет Telegram-каналы по ключевым словам.
+    """
+    if not client_manager.is_connected(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify"
+        )
+
+    max_limit = 100
+    safe_limit = min(request.limit_per_keyword, max_limit)
+
+    try:
+        items = await client_manager.search_channels(
+            keywords=request.keywords,
+            limit_per_keyword=safe_limit,
+            language=request.language,
+            include_about=request.include_about,
+        )
+        return ChannelsSearchResponse(
+            items=[ChannelsSearchResultItem(**item) for item in items],
+            total=len(items),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при поиске каналов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/sessions/{session_id}/channels/parsed",
+    response_model=SaveParsedChannelsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def save_parsed_channels(session_id: str, request: SaveParsedChannelsRequest):
+    """
+    Сохраняет найденные каналы в базу.
+    """
+    if parsed_channels_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище parsed-каналов не инициализировано",
+        )
+
+    try:
+        saved = parsed_channels_repo.upsert_many(
+            session_id=session_id,
+            items=[item.model_dump() for item in request.items],
+        )
+        return SaveParsedChannelsResponse(
+            success=True,
+            saved=saved,
+            message="Результаты парсинга сохранены",
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении parsed-каналов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/sessions/{session_id}/channels/parsed",
+    response_model=ParsedChannelsListResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def list_parsed_channels(
+    session_id: str,
+    query: str = "",
+    keyword: str = "",
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    Возвращает сохраненные каналы с фильтрацией.
+    """
+    if parsed_channels_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище parsed-каналов не инициализировано",
+        )
+
+    safe_limit = max(1, min(limit, 500))
+    safe_offset = max(0, offset)
+
+    try:
+        rows = parsed_channels_repo.list(
+            session_id=session_id,
+            query=query,
+            keyword=keyword,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+        items = [
+            ChannelsSearchResultItem(
+                channel_id=str(row.get("channel_id", "")),
+                title=row.get("title") or "",
+                username=row.get("username"),
+                link=row.get("link"),
+                about=row.get("about"),
+                participants_count=row.get("participants_count"),
+                verified=row.get("verified"),
+                scam=row.get("scam"),
+                fake=row.get("fake"),
+                found_by=row.get("found_by") or [],
+            )
+            for row in rows
+            if row.get("channel_id") and row.get("title")
+        ]
+        return ParsedChannelsListResponse(success=True, items=items, total=len(items))
+    except Exception as e:
+        logger.error(f"Ошибка при получении parsed-каналов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.delete(
+    "/sessions/{session_id}/channels/parsed",
+    response_model=DeleteParsedChannelsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def delete_parsed_channels(session_id: str, global_delete: bool = False):
+    """
+    Удаляет parsed-каналы: либо только текущей сессии, либо глобально.
+    """
+    if parsed_channels_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище parsed-каналов не инициализировано",
+        )
+
+    try:
+        deleted = parsed_channels_repo.delete(
+            session_id=None if global_delete else session_id
+        )
+        return DeleteParsedChannelsResponse(
+            success=True,
+            deleted=deleted,
+            message="Записи parsed-каналов удалены",
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при удалении parsed-каналов: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",

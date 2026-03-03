@@ -878,6 +878,95 @@ class DeleteChannelPostsRequest(BaseModel):
         return v
 
 
+class ChannelsSearchRequest(BaseModel):
+    """Запрос на поиск Telegram-каналов по ключевым словам."""
+    keywords: List[str] = Field(
+        ...,
+        description="Ключевые слова/фразы для поиска каналов",
+        min_length=1,
+    )
+    limit_per_keyword: int = Field(
+        20,
+        description="Лимит результатов на одно ключевое слово",
+        ge=1,
+        le=100,
+    )
+    language: Optional[str] = Field(
+        None,
+        description="Опциональный язык поиска (например: ru, en)",
+        max_length=12,
+    )
+    include_about: bool = Field(
+        True,
+        description="Подтягивать описание канала (about), если доступно",
+    )
+
+    @field_validator("keywords")
+    @classmethod
+    def validate_keywords(cls, v: List[str]) -> List[str]:
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Нужно передать хотя бы одно ключевое слово")
+        return values
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip().lower()
+        return value or None
+
+
+class ChannelsSearchResultItem(BaseModel):
+    """Нормализованный результат найденного Telegram-канала."""
+    channel_id: str = Field(..., description="ID канала (peer/channel id)")
+    title: str
+    username: Optional[str] = None
+    link: Optional[str] = None
+    about: Optional[str] = None
+    participants_count: Optional[int] = None
+    verified: Optional[bool] = None
+    scam: Optional[bool] = None
+    fake: Optional[bool] = None
+    found_by: List[str] = Field(
+        default_factory=list,
+        description="Список ключевых слов, по которым найден канал",
+    )
+
+
+class ChannelsSearchResponse(BaseModel):
+    """Ответ на поиск Telegram-каналов."""
+    items: List[ChannelsSearchResultItem]
+    total: int
+
+
+class SaveParsedChannelsRequest(BaseModel):
+    """Запрос на сохранение найденных каналов в базу."""
+    items: List[ChannelsSearchResultItem] = Field(..., min_length=1)
+
+
+class ParsedChannelsListResponse(BaseModel):
+    """Ответ со списком сохраненных каналов."""
+    success: bool
+    items: List[ChannelsSearchResultItem]
+    total: int
+
+
+class SaveParsedChannelsResponse(BaseModel):
+    """Ответ на сохранение пачки каналов в базу."""
+    success: bool
+    saved: int
+    message: str
+
+
+class DeleteParsedChannelsResponse(BaseModel):
+    """Ответ на очистку сохраненных каналов."""
+    success: bool
+    deleted: int
+    message: str
+
+
 class MessagesResponse(BaseModel):
     """Ответ со списком сообщений чата"""
     success: bool

@@ -112,3 +112,82 @@ class SessionRepo:
             phone_code_hash="",
             is_authorized=True,
         )
+
+
+class ParsedChannelsRepo:
+    """Репозиторий сохраненных результатов парсинга каналов."""
+
+    def __init__(self, client: Optional[Client] = None):
+        self.client = client or get_supabase_client()
+        self.table_name = "parsed_channels"
+
+    def upsert_many(self, session_id: str, items: List[Dict[str, Any]]) -> int:
+        if not items:
+            return 0
+
+        payload: List[Dict[str, Any]] = []
+        for item in items:
+            payload.append(
+                {
+                    "session_id": session_id,
+                    "channel_id": str(item.get("channel_id") or "").strip(),
+                    "title": item.get("title"),
+                    "username": item.get("username"),
+                    "link": item.get("link"),
+                    "about": item.get("about"),
+                    "participants_count": item.get("participants_count"),
+                    "verified": item.get("verified"),
+                    "scam": item.get("scam"),
+                    "fake": item.get("fake"),
+                    "found_by": item.get("found_by") or [],
+                }
+            )
+
+        cleaned = [row for row in payload if row["channel_id"]]
+        if not cleaned:
+            return 0
+
+        response = (
+            self.client.table(self.table_name)
+            .upsert(cleaned, on_conflict="session_id,channel_id")
+            .execute()
+        )
+        return len(response.data or cleaned)
+
+    def list(
+        self,
+        session_id: Optional[str] = None,
+        query: Optional[str] = None,
+        keyword: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        request = self.client.table(self.table_name).select("*")
+        if session_id:
+            request = request.eq("session_id", session_id)
+
+        search_query = (query or "").strip()
+        if search_query:
+            escaped = search_query.replace("%", "\\%")
+            request = request.or_(
+                f"title.ilike.%{escaped}%,username.ilike.%{escaped}%,about.ilike.%{escaped}%"
+            )
+
+        keyword_value = (keyword or "").strip()
+        if keyword_value:
+            request = request.contains("found_by", [keyword_value])
+
+        end = max(offset, 0) + max(limit, 1) - 1
+        response = (
+            request.order("updated_at", desc=True)
+            .range(max(offset, 0), end)
+            .execute()
+        )
+        return response.data or []
+
+    def delete(self, session_id: Optional[str] = None) -> int:
+        request = self.client.table(self.table_name).delete()
+        if session_id:
+            request = request.eq("session_id", session_id)
+        response = request.execute()
+        return len(response.data or [])

@@ -2621,6 +2621,116 @@ class MultiSessionManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def search_channels(
+        self,
+        keywords: List[str],
+        limit_per_keyword: int = 20,
+        language: Optional[str] = None,
+        include_about: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Ищет Telegram-каналы по списку ключевых слов.
+        """
+        if not self.client:
+            await self.get_client(self.default_session_id)
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        normalized_keywords = [item.strip() for item in keywords if item and item.strip()]
+        if not normalized_keywords:
+            raise ValueError("Нужно передать хотя бы одно ключевое слово")
+
+        if limit_per_keyword < 1:
+            raise ValueError("limit_per_keyword должен быть больше 0")
+
+        result_map: Dict[str, Dict[str, Any]] = {}
+        language_filter = (language or "").strip().lower()
+
+        for keyword in normalized_keywords:
+            try:
+                response = await self.client(
+                    functions.contacts.SearchRequest(
+                        q=keyword,
+                        limit=limit_per_keyword,
+                    )
+                )
+            except FloodWaitError as e:
+                raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+            except RPCError as e:
+                raise ValueError(f"Ошибка Telegram API при поиске '{keyword}': {e.message}")
+
+            chats = getattr(response, "chats", []) or []
+            for entity in chats:
+                if not isinstance(entity, Channel):
+                    continue
+                if not bool(getattr(entity, "broadcast", False)):
+                    continue
+
+                title_value = (getattr(entity, "title", None) or "").strip()
+                username_value = getattr(entity, "username", None)
+                about_value: Optional[str] = None
+                participants_count: Optional[int] = None
+
+                if include_about:
+                    try:
+                        full = await self.client(
+                            functions.channels.GetFullChannelRequest(channel=entity)
+                        )
+                        full_chat = getattr(full, "full_chat", None)
+                        if full_chat is not None:
+                            about_value = getattr(full_chat, "about", None)
+                            participants_count = getattr(full_chat, "participants_count", None)
+                    except FloodWaitError as e:
+                        raise ValueError(
+                            f"Слишком много запросов. Попробуйте через {e.seconds} секунд"
+                        )
+                    except RPCError:
+                        # Для некоторых каналов детали могут быть недоступны.
+                        about_value = None
+                        participants_count = None
+
+                if language_filter:
+                    haystack = " ".join(
+                        x for x in [title_value, about_value or ""] if x
+                    ).lower()
+                    if haystack and language_filter not in haystack:
+                        continue
+
+                channel_id = str(getattr(entity, "id", ""))
+                if not channel_id:
+                    continue
+
+                dedupe_key = (
+                    f"username:{username_value.lower()}"
+                    if username_value
+                    else f"channel_id:{channel_id}"
+                )
+                if dedupe_key not in result_map:
+                    result_map[dedupe_key] = {
+                        "channel_id": channel_id,
+                        "title": title_value or channel_id,
+                        "username": username_value,
+                        "link": f"https://t.me/{username_value}" if username_value else None,
+                        "about": about_value,
+                        "participants_count": participants_count,
+                        "verified": getattr(entity, "verified", None),
+                        "scam": getattr(entity, "scam", None),
+                        "fake": getattr(entity, "fake", None),
+                        "found_by": [keyword],
+                    }
+                    continue
+
+                existing = result_map[dedupe_key]
+                if keyword not in existing["found_by"]:
+                    existing["found_by"].append(keyword)
+                if not existing.get("about") and about_value:
+                    existing["about"] = about_value
+                if existing.get("participants_count") is None and participants_count is not None:
+                    existing["participants_count"] = participants_count
+
+        return list(result_map.values())
+
     async def subscribe_channel(self, channel_identifier: str) -> Dict[str, Any]:
         """
         Подписывает текущий аккаунт на канал.
