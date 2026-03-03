@@ -1483,3 +1483,73 @@ class ReactionJobOut(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+
+class WarmupJobCreate(BaseModel):
+    """Запрос на создание кампании прогрева."""
+    name: str = Field(..., min_length=1, max_length=120)
+    account_sessions: list[str] = Field(..., min_length=1)
+    mode: Literal["cautious", "normal", "aggressive"]
+    enabled_actions: list[str] = Field(..., min_length=1)
+    target_channels: list[str] = Field(..., min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Название кампании не может быть пустым")
+        return value
+
+    @field_validator("account_sessions", "enabled_actions", "target_channels")
+    @classmethod
+    def validate_non_empty_items(cls, v: list[str]) -> list[str]:
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Список не может быть пустым")
+        return values
+
+
+class WarmupJobUpdate(BaseModel):
+    """Запрос на обновление кампании прогрева."""
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    account_sessions: Optional[list[str]] = Field(None, min_length=1)
+    mode: Optional[Literal["cautious", "normal", "aggressive"]] = None
+    enabled_actions: Optional[list[str]] = Field(None, min_length=1)
+    target_channels: Optional[list[str]] = Field(None, min_length=1)
+    is_active: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_optional_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            raise ValueError("Название кампании не может быть пустым")
+        return value
+
+    @field_validator("account_sessions", "enabled_actions", "target_channels")
+    @classmethod
+    def validate_optional_non_empty_items(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return None
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Список не может быть пустым")
+        return values
+
+
+class WarmupJobOut(BaseModel):
+    """Выходная модель кампании прогрева."""
+    id: str
+    user_id: str
+    name: str
+    account_sessions: list[str]
+    mode: Literal["cautious", "normal", "aggressive"]
+    actions_per_day: int
+    enabled_actions: list[str]
+    target_channels: list[str]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
