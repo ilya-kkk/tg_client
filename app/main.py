@@ -1,8 +1,9 @@
 import asyncio
+import os
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from app.models import (
     LoginRequest,
     LoginResponse,
@@ -138,6 +139,11 @@ parsed_channels_repo: ParsedChannelsRepo | None = None
 reaction_jobs_repo: ReactionJobsRepo | None = None
 warmup_jobs_repo: WarmupJobsRepo | None = None
 reaction_jobs_task: asyncio.Task | None = None
+warmup_jobs_task: asyncio.Task | None = None
+warmup_job_tasks: dict[str, asyncio.Task] = {}
+
+WARMUP_MONITOR_INTERVAL_ENV = "WARMUP_MONITOR_INTERVAL_MINUTES"
+DEFAULT_WARMUP_MONITOR_INTERVAL_MINUTES = 5
 
 
 tags_metadata = [
@@ -204,6 +210,115 @@ async def reaction_jobs_worker() -> None:
         await asyncio.sleep(poll_interval_seconds)
 
 
+def get_warmup_monitor_interval_seconds() -> int:
+    raw_value = os.getenv(
+        WARMUP_MONITOR_INTERVAL_ENV,
+        str(DEFAULT_WARMUP_MONITOR_INTERVAL_MINUTES),
+    ).strip()
+    try:
+        minutes = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Некорректное значение %s='%s', используется значение по умолчанию %s минут",
+            WARMUP_MONITOR_INTERVAL_ENV,
+            raw_value,
+            DEFAULT_WARMUP_MONITOR_INTERVAL_MINUTES,
+        )
+        minutes = DEFAULT_WARMUP_MONITOR_INTERVAL_MINUTES
+
+    return max(1, minutes) * 60
+
+
+def _get_warmup_job_id(job: dict) -> str:
+    return str(job.get("id") or "").strip()
+
+
+async def run_warmup_job_worker(job: dict) -> None:
+    """Минимальный фоновый цикл одной кампании прогрева."""
+    job_id = _get_warmup_job_id(job)
+    mode = str(job.get("mode") or "normal")
+    mode_config = WARMUP_MODES.get(mode) or WARMUP_MODES["normal"]
+    sleep_seconds = max(5, int(mode_config["min_delay_sec"]))
+
+    logger.info("Запущен warmup-воркер: job_id=%s mode=%s", job_id, mode)
+    try:
+        # Детальная логика прогрева будет расширена в отдельном WarmupWorker.
+        while True:
+            await asyncio.sleep(sleep_seconds)
+    except asyncio.CancelledError:
+        logger.info("Остановлен warmup-воркер: job_id=%s", job_id)
+        raise
+
+
+def ensure_warmup_job_worker_started(job: dict) -> None:
+    job_id = _get_warmup_job_id(job)
+    if not job_id:
+        return
+
+    existing_task = warmup_job_tasks.get(job_id)
+    if existing_task is not None and not existing_task.done():
+        return
+
+    if existing_task is not None and existing_task.done():
+        warmup_job_tasks.pop(job_id, None)
+
+    warmup_job_tasks[job_id] = asyncio.create_task(
+        run_warmup_job_worker(job),
+        name=f"warmup-job-{job_id}",
+    )
+
+
+async def stop_warmup_job_worker(job_id: str) -> None:
+    task = warmup_job_tasks.pop(job_id, None)
+    if task is None:
+        return
+
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def stop_all_warmup_job_workers() -> None:
+    for job_id in list(warmup_job_tasks.keys()):
+        await stop_warmup_job_worker(job_id)
+
+
+async def sync_warmup_job_workers(active_jobs: list[dict]) -> None:
+    active_job_ids: set[str] = set()
+
+    for job in active_jobs:
+        job_id = _get_warmup_job_id(job)
+        if not job_id:
+            continue
+
+        active_job_ids.add(job_id)
+        ensure_warmup_job_worker_started(job)
+
+    for job_id in list(warmup_job_tasks.keys()):
+        if job_id not in active_job_ids:
+            await stop_warmup_job_worker(job_id)
+
+
+async def warmup_jobs_worker() -> None:
+    """Фоновый планировщик, который следит за активными warmup-кампаниями."""
+    poll_interval_seconds = get_warmup_monitor_interval_seconds()
+
+    while True:
+        try:
+            if warmup_jobs_repo is None:
+                await asyncio.sleep(poll_interval_seconds)
+                continue
+
+            active_jobs = warmup_jobs_repo.list_active()
+            await sync_warmup_job_workers(active_jobs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Ошибка в воркере warmup-кампаний: %s", e)
+
+        await asyncio.sleep(poll_interval_seconds)
+
+
 def get_mode_average_actions_per_day(mode: str) -> int:
     mode_config = WARMUP_MODES.get(mode)
     if mode_config is None:
@@ -216,7 +331,7 @@ def get_mode_average_actions_per_day(mode: str) -> int:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global client_manager, session_repo, parsed_channels_repo, reaction_jobs_repo, warmup_jobs_repo, reaction_jobs_task
+    global client_manager, session_repo, parsed_channels_repo, reaction_jobs_repo, warmup_jobs_repo, reaction_jobs_task, warmup_jobs_task
 
     # При старте приложения
     logger.info("Инициализация SessionRepo и MultiSessionManager...")
@@ -230,7 +345,9 @@ async def lifespan(app: FastAPI):
     app.state.reaction_jobs_repo = reaction_jobs_repo
     app.state.warmup_jobs_repo = warmup_jobs_repo
     app.state.client_manager = client_manager
+    warmup_job_tasks.clear()
     reaction_jobs_task = asyncio.create_task(reaction_jobs_worker())
+    warmup_jobs_task = asyncio.create_task(warmup_jobs_worker())
     
     yield
     
@@ -243,6 +360,14 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         reaction_jobs_task = None
+    if warmup_jobs_task is not None:
+        warmup_jobs_task.cancel()
+        try:
+            await warmup_jobs_task
+        except asyncio.CancelledError:
+            pass
+        warmup_jobs_task = None
+    await stop_all_warmup_job_workers()
     if client_manager is not None:
         await client_manager.disconnect()
 

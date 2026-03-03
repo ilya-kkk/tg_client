@@ -276,6 +276,15 @@ class WarmupJobsRepo:
         )
         return response.data or []
 
+    def list_active(self) -> List[Dict[str, Any]]:
+        response = (
+            self.client.table(self.table_name)
+            .select("*")
+            .eq("is_active", True)
+            .execute()
+        )
+        return response.data or []
+
     def create(self, user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = {**payload, "user_id": user_id}
         response = self.client.table(self.table_name).insert(data).execute()
