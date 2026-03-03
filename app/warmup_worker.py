@@ -647,14 +647,27 @@ class WarmupWorker:
             )
             return False
 
+    async def warmup_search_global(self, session_id: str) -> bool:
+        """Выполняет глобальный поиск по случайному слову из встроенного словаря."""
+        return await self._run_warmup_search_global(
+            session_id=session_id,
+            job_id="",
+        )
+
     async def _warmup_search_global(self, session_id: str, job: dict) -> None:
+        await self._run_warmup_search_global(
+            session_id=session_id,
+            job_id=self._get_job_id(job),
+        )
+
+    async def _run_warmup_search_global(self, session_id: str, job_id: str) -> bool:
         telethon = self._load_telethon()
         if telethon is None:
-            return
+            return False
 
-        client = await self._get_session_client(session_id, job)
+        client = await self._get_session_client(session_id, {"id": job_id} if job_id else {})
         if client is None:
-            return
+            return False
 
         functions = telethon["functions"]
         types = telethon["types"]
@@ -678,20 +691,22 @@ class WarmupWorker:
 
             logger.info(
                 "Warmup search_global выполнен: job_id=%s session_id=%s query=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
                 search_query,
             )
+            return True
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning(
                 "Ошибка warmup search_global: job_id=%s session_id=%s query=%s error=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
                 search_query,
                 e,
             )
+            return False
 
     async def _warmup_update_status(self, session_id: str, job: dict) -> None:
         telethon = self._load_telethon()

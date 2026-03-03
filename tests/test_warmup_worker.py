@@ -535,6 +535,97 @@ def test_warmup_view_story_picks_random_target_and_calls_get_stories_request(
     asyncio.run(scenario())
 
 
+def test_warmup_search_global_calls_search_global_request_with_random_term(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class StubManager:
+        def __init__(self, client):
+            self.client = client
+            self.called_with: str | None = None
+
+        async def get_client(self, session_id: str):
+            self.called_with = session_id
+            return self.client
+
+    class DummyInputMessagesFilterEmpty:
+        pass
+
+    class DummyInputPeerEmpty:
+        pass
+
+    class DummySearchGlobalRequest:
+        def __init__(
+            self,
+            q,
+            filter,
+            min_date=0,
+            max_date=0,
+            offset_rate=0,
+            offset_peer=None,
+            offset_id=0,
+            limit=0,
+            folder_id=None,
+        ):
+            self.q = q
+            self.filter = filter
+            self.min_date = min_date
+            self.max_date = max_date
+            self.offset_rate = offset_rate
+            self.offset_peer = offset_peer
+            self.offset_id = offset_id
+            self.limit = limit
+            self.folder_id = folder_id
+
+    class StubClient:
+        def __init__(self):
+            self.requests = []
+
+        async def __call__(self, request):
+            self.requests.append(request)
+            return SimpleNamespace(messages=[])
+
+    async def scenario():
+        client = StubClient()
+        manager = StubManager(client)
+        worker = WarmupWorker(client_manager=manager)
+
+        monkeypatch.setattr(
+            worker,
+            "_load_telethon",
+            lambda: {
+                "functions": SimpleNamespace(
+                    messages=SimpleNamespace(SearchGlobalRequest=DummySearchGlobalRequest)
+                ),
+                "types": SimpleNamespace(
+                    InputMessagesFilterEmpty=DummyInputMessagesFilterEmpty,
+                    InputPeerEmpty=DummyInputPeerEmpty,
+                ),
+            },
+        )
+
+        def fake_choice(values):
+            assert 45 <= len(values) <= 60
+            assert "science" in values
+            return "science"
+
+        monkeypatch.setattr(warmup_worker_module.random, "choice", fake_choice)
+
+        searched = await worker.warmup_search_global(session_id="session-1")
+
+        assert searched is True
+        assert manager.called_with == "session-1"
+        assert len(client.requests) == 1
+        assert isinstance(client.requests[0], DummySearchGlobalRequest)
+        assert client.requests[0].q == "science"
+        assert isinstance(client.requests[0].filter, DummyInputMessagesFilterEmpty)
+        assert isinstance(client.requests[0].offset_peer, DummyInputPeerEmpty)
+        assert client.requests[0].limit == 20
+        assert client.requests[0].offset_rate == 0
+        assert client.requests[0].offset_id == 0
+
+    asyncio.run(scenario())
+
+
 def test_warmup_update_status_switches_online_and_offline(monkeypatch: pytest.MonkeyPatch):
     class StubManager:
         def __init__(self, client):
