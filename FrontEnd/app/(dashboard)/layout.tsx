@@ -19,6 +19,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           <Link href="/auto-reactions" className="nav-link">
             Автореакции
           </Link>
+          <Link href="/warmup" className="nav-link">
+            Прогрев
+          </Link>
         </nav>
       </aside>
       <main className="main-content">{children}</main>
