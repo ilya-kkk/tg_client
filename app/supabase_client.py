@@ -282,3 +282,28 @@ class WarmupJobsRepo:
         if response.data:
             return response.data[0]
         return data
+
+    def get_by_id(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]:
+        response = (
+            self.client.table(self.table_name)
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("id", job_id)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return response.data[0]
+
+    def update(self, user_id: str, job_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        response = (
+            self.client.table(self.table_name)
+            .update(payload)
+            .eq("user_id", user_id)
+            .eq("id", job_id)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return response.data[0]

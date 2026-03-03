@@ -111,6 +111,7 @@ from app.models import (
     ReactionJobUpdate,
     ReactionJobOut,
     WarmupJobCreate,
+    WarmupJobUpdate,
     WarmupJobOut,
     SessionInfo,
     SessionListResponse,
@@ -1914,6 +1915,52 @@ async def create_warmup_job(user_id: str, request: WarmupJobCreate):
         )
     except Exception as e:
         logger.error("Ошибка при создании warmup_job: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.patch(
+    "/users/{user_id}/warmup-jobs/{job_id}",
+    response_model=WarmupJobOut,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def update_warmup_job(user_id: str, job_id: str, request: WarmupJobUpdate):
+    if warmup_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище warmup_jobs не инициализировано",
+        )
+    payload = request.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Не переданы данные для обновления",
+        )
+
+    try:
+        if "mode" in payload:
+            payload["actions_per_day"] = get_mode_average_actions_per_day(str(payload["mode"]))
+
+        row = warmup_jobs_repo.update(user_id=user_id, job_id=job_id, payload=payload)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Кампания не найдена",
+            )
+        return WarmupJobOut(**row)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.error("Ошибка конфигурации warmup mode: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+    except Exception as e:
+        logger.error("Ошибка при обновлении warmup_job: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",
