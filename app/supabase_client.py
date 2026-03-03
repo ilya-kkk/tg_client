@@ -257,3 +257,21 @@ class ReactionJobsRepo:
             return False
         self.client.table(self.table_name).delete().eq("user_id", user_id).eq("id", job_id).execute()
         return self.get_by_id(user_id=user_id, job_id=job_id) is None
+
+
+class WarmupJobsRepo:
+    """Репозиторий кампаний прогрева."""
+
+    def __init__(self, client: Optional[Client] = None):
+        self.client = client or get_supabase_client()
+        self.table_name = "warmup_jobs"
+
+    def list_by_user(self, user_id: str) -> List[Dict[str, Any]]:
+        response = (
+            self.client.table(self.table_name)
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return response.data or []

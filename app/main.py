@@ -110,12 +110,18 @@ from app.models import (
     ReactionJobCreate,
     ReactionJobUpdate,
     ReactionJobOut,
+    WarmupJobOut,
     SessionInfo,
     SessionListResponse,
     SessionStatusResponse,
     DeleteSessionResponse,
 )
-from app.supabase_client import SessionRepo, ParsedChannelsRepo, ReactionJobsRepo
+from app.supabase_client import (
+    SessionRepo,
+    ParsedChannelsRepo,
+    ReactionJobsRepo,
+    WarmupJobsRepo,
+)
 from app.telegram_client import MultiSessionManager
 import logging
 from app.config import CORS_ALLOW_ORIGINS
@@ -127,6 +133,7 @@ client_manager: MultiSessionManager | None = None
 session_repo: SessionRepo | None = None
 parsed_channels_repo: ParsedChannelsRepo | None = None
 reaction_jobs_repo: ReactionJobsRepo | None = None
+warmup_jobs_repo: WarmupJobsRepo | None = None
 reaction_jobs_task: asyncio.Task | None = None
 
 
@@ -197,17 +204,19 @@ async def reaction_jobs_worker() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global client_manager, session_repo, parsed_channels_repo, reaction_jobs_repo, reaction_jobs_task
+    global client_manager, session_repo, parsed_channels_repo, reaction_jobs_repo, warmup_jobs_repo, reaction_jobs_task
 
     # При старте приложения
     logger.info("Инициализация SessionRepo и MultiSessionManager...")
     session_repo = SessionRepo()
     parsed_channels_repo = ParsedChannelsRepo()
     reaction_jobs_repo = ReactionJobsRepo()
+    warmup_jobs_repo = WarmupJobsRepo()
     client_manager = MultiSessionManager(session_repo=session_repo)
     app.state.session_repo = session_repo
     app.state.parsed_channels_repo = parsed_channels_repo
     app.state.reaction_jobs_repo = reaction_jobs_repo
+    app.state.warmup_jobs_repo = warmup_jobs_repo
     app.state.client_manager = client_manager
     reaction_jobs_task = asyncio.create_task(reaction_jobs_worker())
     
@@ -1839,6 +1848,29 @@ async def list_reaction_jobs(user_id: str):
         return [ReactionJobOut(**row) for row in rows]
     except Exception as e:
         logger.error("Ошибка при получении reaction_jobs: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/users/{user_id}/warmup-jobs",
+    response_model=list[WarmupJobOut],
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def list_warmup_jobs(user_id: str):
+    if warmup_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище warmup_jobs не инициализировано",
+        )
+    try:
+        rows = warmup_jobs_repo.list_by_user(user_id)
+        return [WarmupJobOut(**row) for row in rows]
+    except Exception as e:
+        logger.error("Ошибка при получении warmup_jobs: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",
