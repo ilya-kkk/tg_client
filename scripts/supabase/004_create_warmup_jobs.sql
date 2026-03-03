@@ -8,8 +8,8 @@ create table if not exists public.warmup_jobs (
     enabled_actions text[] not null,
     target_channels text[] not null,
     is_active boolean not null default false,
-    created_at timestamptz not null default timezone('utc', now()),
-    updated_at timestamptz not null default timezone('utc', now())
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
 );
 
 create index if not exists warmup_jobs_user_id_idx
@@ -20,7 +20,7 @@ returns trigger
 language plpgsql
 as $$
 begin
-    new.updated_at = timezone('utc', now());
+    new.updated_at = now();
     return new;
 end;
 $$;
