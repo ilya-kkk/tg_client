@@ -16,6 +16,35 @@
   font-size: 1.7rem;
 }
 
+.label {
+  display: block;
+  margin-bottom: 0.42rem;
+  font-size: 0.9rem;
+  color: #cbd5e1;
+}
+
+.input,
+.textarea {
+  width: 100%;
+  border: 1px solid #23304b;
+  border-radius: 0.6rem;
+  background: #0f172a;
+  color: #e5e7eb;
+  padding: 0.65rem 0.75rem;
+}
+
+.input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: #22c55e;
+}
+
+.helperText {
+  margin: 0.4rem 0 0;
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+
 .createButton {
   border: none;
   border-radius: 0.6rem;
@@ -76,7 +105,21 @@
   cursor: pointer;
 }
 
+.secondaryButton {
+  border: 1px solid #334155;
+  border-radius: 0.55rem;
+  padding: 0.5rem 0.85rem;
+  color: #e2e8f0;
+  background: #111827;
+  cursor: pointer;
+}
+
 .retryButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.secondaryButton:disabled {
   opacity: 0.6;
   cursor: default;
 }
@@ -210,6 +253,160 @@
   color: #cbd5e1;
 }
 
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(2, 6, 23, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal {
+  width: min(800px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  border: 1px solid #23304b;
+  border-radius: 0.9rem;
+  background: #070d1c;
+  padding: 1rem;
+}
+
+.modalTitle {
+  margin: 0 0 0.9rem;
+}
+
+.form {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.modeGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.modeCard {
+  position: relative;
+  border: 1px solid #334155;
+  border-radius: 0.7rem;
+  background: #0f172a;
+  padding: 0.65rem;
+  display: grid;
+  gap: 0.3rem;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.modeCardInput {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.modeCardActive {
+  box-shadow: 0 0 0 1px currentColor inset;
+}
+
+.modeCardCautious {
+  color: #4ade80;
+}
+
+.modeCardNormal {
+  color: #facc15;
+}
+
+.modeCardAggressive {
+  color: #f87171;
+}
+
+.modeCardTitle {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.modeCardDescription {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.accountsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.5rem;
+}
+
+.accountOption {
+  border: 1px solid #23304b;
+  border-radius: 0.65rem;
+  background: #0f172a;
+  padding: 0.55rem 0.65rem;
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+}
+
+.accountInfo {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.accountLabel {
+  font-size: 0.9rem;
+  color: #f1f5f9;
+}
+
+.accountDescription {
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+.actionsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.5rem;
+}
+
+.actionOption {
+  border: 1px solid #23304b;
+  border-radius: 0.65rem;
+  background: #0f172a;
+  padding: 0.55rem 0.65rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.actionIcon {
+  font-size: 1rem;
+  line-height: 1.1;
+}
+
+.actionText {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.actionTitle {
+  font-size: 0.89rem;
+  color: #f8fafc;
+}
+
+.actionDescription {
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+}
+
 @media (max-width: 760px) {
   .header {
     flex-direction: column;
@@ -233,5 +430,22 @@
   .rightBlock {
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .modeGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .actionsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .modalActions {
+    flex-direction: column-reverse;
+  }
+
+  .modalActions .createButton,
+  .modalActions .secondaryButton {
+    width: 100%;
   }
 }
