@@ -324,11 +324,15 @@ class WarmupWorker:
             )
             return 0
 
-    async def _warmup_react_to_message(self, session_id: str, job: dict) -> None:
-        telethon = self._load_telethon()
-        if telethon is None:
-            return
+    async def warmup_react_to_message(self, session_id: str, chat: str) -> bool:
+        """Ставит случайную базовую реакцию на случайное входящее сообщение из последних."""
+        return await self._run_warmup_react_to_message(
+            session_id=session_id,
+            chat=chat,
+            job_id="",
+        )
 
+    async def _warmup_react_to_message(self, session_id: str, job: dict) -> None:
         target_chat = self._pick_target_channel(job)
         if not target_chat:
             logger.debug(
@@ -337,13 +341,25 @@ class WarmupWorker:
             )
             return
 
-        client = await self._get_session_client(session_id, job)
+        await self._run_warmup_react_to_message(
+            session_id=session_id,
+            chat=target_chat,
+            job_id=self._get_job_id(job),
+        )
+
+    async def _run_warmup_react_to_message(self, session_id: str, chat: str, job_id: str) -> bool:
+        telethon = self._load_telethon()
+        if telethon is None:
+            return False
+
+        client = await self._get_session_client(session_id, {"id": job_id} if job_id else {})
         if client is None:
-            return
+            return False
 
         functions = telethon["functions"]
-        types = telethon["types"]
-        chat_identifier = self._parse_chat_identifier(target_chat)
+        types = telethon.get("types")
+        normalized_chat = self._normalize_chat_identifier(chat)
+        chat_identifier = self._parse_chat_identifier(normalized_chat)
 
         try:
             peer = await client.get_input_entity(chat_identifier)
@@ -368,11 +384,11 @@ class WarmupWorker:
             if not messages:
                 logger.debug(
                     "Пропуск react_to_message: job_id=%s session_id=%s chat=%s нет подходящих сообщений",
-                    self._get_job_id(job),
+                    job_id,
                     session_id,
-                    target_chat,
+                    normalized_chat,
                 )
-                return
+                return False
 
             selected_message = random.choice(messages)
             selected_reaction = random.choice(self._BASE_REACTIONS)
@@ -380,6 +396,15 @@ class WarmupWorker:
             if hasattr(client, "send_reaction"):
                 await client.send_reaction(peer, int(selected_message.id), reaction=selected_reaction)
             else:
+                if types is None:
+                    logger.warning(
+                        "Ошибка warmup react_to_message: job_id=%s session_id=%s chat=%s error=%s",
+                        job_id,
+                        session_id,
+                        normalized_chat,
+                        "types не загружен",
+                    )
+                    return False
                 await client(
                     self._build_request(
                         functions.messages.SendReactionRequest,
@@ -393,22 +418,24 @@ class WarmupWorker:
 
             logger.info(
                 "Warmup react_to_message выполнен: job_id=%s session_id=%s chat=%s message_id=%s reaction=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_chat,
+                normalized_chat,
                 int(selected_message.id),
                 selected_reaction,
             )
+            return True
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning(
                 "Ошибка warmup react_to_message: job_id=%s session_id=%s chat=%s error=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_chat,
+                normalized_chat,
                 e,
             )
+            return False
 
     async def _warmup_join_channel(self, session_id: str, job: dict) -> None:
         telethon = self._load_telethon()

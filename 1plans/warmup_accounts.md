@@ -69,7 +69,7 @@
 
   #### 4.1 Действия прогрева
   - [x] `warmup_read_messages(session_id, chat)` — открыть диалог, вызвать `GetHistoryRequest`, имитировать задержку «чтения» (0.5–2 сек на каждое сообщение, до 15 сообщений)
-  - [ ] `warmup_react_to_message(session_id, chat)` — получить последние сообщения, выбрать случайное, отправить случайную реакцию из набора базовых эмодзи
+  - [x] `warmup_react_to_message(session_id, chat)` — получить последние сообщения, выбрать случайное, отправить случайную реакцию из набора базовых эмодзи
   - [ ] `warmup_join_channel(session_id, channel)` — подписаться через `JoinChannelRequest`; если уже подписан — пропустить
   - [ ] `warmup_view_story(session_id)` — вызвать `GetStoriesRequest` для случайного контакта или канала из `target_channels`
   - [ ] `warmup_search_global(session_id)` — вызвать `SearchGlobalRequest` со случайным словом из встроенного словаря (~50 нейтральных слов)

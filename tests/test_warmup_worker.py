@@ -216,6 +216,100 @@ def test_warmup_read_messages_calls_get_history_and_simulates_read_delay(
     asyncio.run(scenario())
 
 
+def test_warmup_react_to_message_gets_latest_messages_and_sends_random_reaction(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class StubManager:
+        def __init__(self, client):
+            self.client = client
+            self.called_with: str | None = None
+
+        async def get_client(self, session_id: str):
+            self.called_with = session_id
+            return self.client
+
+    class DummyGetHistoryRequest:
+        def __init__(
+            self,
+            peer,
+            offset_id=0,
+            offset_date=None,
+            add_offset=0,
+            limit=0,
+            max_id=0,
+            min_id=0,
+            hash=0,
+        ):
+            self.peer = peer
+            self.limit = limit
+            self.offset_id = offset_id
+            self.offset_date = offset_date
+            self.add_offset = add_offset
+            self.max_id = max_id
+            self.min_id = min_id
+            self.hash = hash
+
+    class StubClient:
+        def __init__(self):
+            self.last_entity = None
+            self.requests = []
+            self.reactions: list[tuple[str, int, str]] = []
+
+        async def get_input_entity(self, entity):
+            self.last_entity = entity
+            return f"peer:{entity}"
+
+        async def __call__(self, request):
+            self.requests.append(request)
+            return SimpleNamespace(
+                messages=[
+                    SimpleNamespace(id=100, out=True),
+                    SimpleNamespace(id=101, out=False),
+                    SimpleNamespace(id=102, out=False),
+                ]
+            )
+
+        async def send_reaction(self, peer, message_id: int, reaction: str):
+            self.reactions.append((peer, message_id, reaction))
+
+    async def scenario():
+        client = StubClient()
+        manager = StubManager(client)
+        worker = WarmupWorker(client_manager=manager)
+
+        monkeypatch.setattr(
+            worker,
+            "_load_telethon",
+            lambda: {
+                "functions": SimpleNamespace(
+                    messages=SimpleNamespace(GetHistoryRequest=DummyGetHistoryRequest)
+                ),
+            },
+        )
+
+        def fake_choice(values):
+            if values and isinstance(values[0], str):
+                return "🔥"
+            return values[-1]
+
+        monkeypatch.setattr(warmup_worker_module.random, "choice", fake_choice)
+
+        reacted = await worker.warmup_react_to_message(
+            session_id="session-1",
+            chat="https://t.me/test_channel",
+        )
+
+        assert reacted is True
+        assert manager.called_with == "session-1"
+        assert client.last_entity == "@test_channel"
+        assert len(client.requests) == 1
+        assert isinstance(client.requests[0], DummyGetHistoryRequest)
+        assert client.requests[0].limit == 20
+        assert client.reactions == [("peer:@test_channel", 102, "🔥")]
+
+    asyncio.run(scenario())
+
+
 def test_warmup_update_status_switches_online_and_offline(monkeypatch: pytest.MonkeyPatch):
     class StubManager:
         def __init__(self, client):
