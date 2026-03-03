@@ -307,3 +307,10 @@ class WarmupJobsRepo:
         if not response.data:
             return None
         return response.data[0]
+
+    def delete(self, user_id: str, job_id: str) -> bool:
+        existing = self.get_by_id(user_id=user_id, job_id=job_id)
+        if existing is None:
+            return False
+        self.client.table(self.table_name).delete().eq("user_id", user_id).eq("id", job_id).execute()
+        return self.get_by_id(user_id=user_id, job_id=job_id) is None

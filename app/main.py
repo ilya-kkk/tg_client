@@ -1967,6 +1967,35 @@ async def update_warmup_job(user_id: str, job_id: str, request: WarmupJobUpdate)
         )
 
 
+@app.delete(
+    "/users/{user_id}/warmup-jobs/{job_id}",
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def delete_warmup_job(user_id: str, job_id: str):
+    if warmup_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище warmup_jobs не инициализировано",
+        )
+    try:
+        deleted = warmup_jobs_repo.delete(user_id=user_id, job_id=job_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Кампания не найдена",
+            )
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Ошибка при удалении warmup_job: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
 @app.post(
     "/users/{user_id}/reaction-jobs",
     response_model=ReactionJobOut,

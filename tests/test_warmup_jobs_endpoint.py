@@ -71,6 +71,23 @@ class FailingWarmupJobsUpdateRepo:
         raise RuntimeError("update failure")
 
 
+class StubWarmupJobsDeleteRepo:
+    def __init__(self, deleted: bool):
+        self.deleted = deleted
+        self.received_user_id: str | None = None
+        self.received_job_id: str | None = None
+
+    def delete(self, user_id: str, job_id: str) -> bool:
+        self.received_user_id = user_id
+        self.received_job_id = job_id
+        return self.deleted
+
+
+class FailingWarmupJobsDeleteRepo:
+    def delete(self, user_id: str, job_id: str) -> bool:
+        raise RuntimeError("delete failure")
+
+
 def test_list_warmup_jobs_returns_rows(monkeypatch: pytest.MonkeyPatch):
     now = datetime.now(timezone.utc)
     repo = StubWarmupJobsRepo(
@@ -274,3 +291,42 @@ def test_update_warmup_job_returns_500_on_repo_error(monkeypatch: pytest.MonkeyP
 
     assert exc.value.status_code == 500
     assert "update failure" in exc.value.detail
+
+
+def test_delete_warmup_job_returns_success(monkeypatch: pytest.MonkeyPatch):
+    repo = StubWarmupJobsDeleteRepo(deleted=True)
+    monkeypatch.setattr(main, "warmup_jobs_repo", repo)
+
+    result = asyncio.run(main.delete_warmup_job("user-1", "job-1"))
+
+    assert repo.received_user_id == "user-1"
+    assert repo.received_job_id == "job-1"
+    assert result == {"success": True}
+
+
+def test_delete_warmup_job_returns_404_when_job_not_found(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main, "warmup_jobs_repo", StubWarmupJobsDeleteRepo(deleted=False))
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(main.delete_warmup_job("user-1", "job-unknown"))
+
+    assert exc.value.status_code == 404
+
+
+def test_delete_warmup_job_returns_503_when_repo_missing(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main, "warmup_jobs_repo", None)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(main.delete_warmup_job("user-1", "job-1"))
+
+    assert exc.value.status_code == 503
+
+
+def test_delete_warmup_job_returns_500_on_repo_error(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main, "warmup_jobs_repo", FailingWarmupJobsDeleteRepo())
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(main.delete_warmup_job("user-1", "job-1"))
+
+    assert exc.value.status_code == 500
+    assert "delete failure" in exc.value.detail
