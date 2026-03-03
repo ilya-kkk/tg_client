@@ -439,6 +439,102 @@ def test_warmup_join_channel_skips_if_already_subscribed(monkeypatch: pytest.Mon
     asyncio.run(scenario())
 
 
+def test_warmup_view_story_picks_random_target_and_calls_get_stories_request(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class StubManager:
+        def __init__(self, client):
+            self.client = client
+            self.called_with: str | None = None
+
+        async def get_client(self, session_id: str):
+            self.called_with = session_id
+            return self.client
+
+    class DummyGetPeerStoriesRequest:
+        def __init__(self, peer):
+            self.peer = peer
+
+    class DummyGetStoriesRequest:
+        def __init__(self, peer, id):
+            self.peer = peer
+            self.id = id
+
+    class DummyReadStoriesRequest:
+        def __init__(self, peer, max_id):
+            self.peer = peer
+            self.max_id = max_id
+
+    class StubClient:
+        def __init__(self):
+            self.last_entity = None
+            self.requests = []
+
+        async def get_input_entity(self, entity):
+            self.last_entity = entity
+            return f"peer:{entity}"
+
+        async def __call__(self, request):
+            self.requests.append(request)
+            if isinstance(request, DummyGetPeerStoriesRequest):
+                return SimpleNamespace(
+                    stories=SimpleNamespace(
+                        stories=[
+                            SimpleNamespace(id=501),
+                            SimpleNamespace(id=502),
+                        ]
+                    )
+                )
+            return SimpleNamespace(ok=True)
+
+    async def scenario():
+        client = StubClient()
+        manager = StubManager(client)
+        worker = WarmupWorker(client_manager=manager)
+
+        monkeypatch.setattr(
+            worker,
+            "_load_telethon",
+            lambda: {
+                "functions": SimpleNamespace(
+                    stories=SimpleNamespace(
+                        GetPeerStoriesRequest=DummyGetPeerStoriesRequest,
+                        GetStoriesRequest=DummyGetStoriesRequest,
+                        ReadStoriesRequest=DummyReadStoriesRequest,
+                    )
+                ),
+            },
+        )
+
+        def fake_choice(values):
+            if values and isinstance(values[0], str):
+                return values[-1]
+            return values[0]
+
+        monkeypatch.setattr(warmup_worker_module.random, "choice", fake_choice)
+
+        await worker._warmup_view_story(
+            session_id="session-1",
+            job={
+                "id": "job-1",
+                "target_channels": ["https://t.me/channel_a", "@contact_b"],
+            },
+        )
+
+        assert manager.called_with == "session-1"
+        assert client.last_entity == "@contact_b"
+        assert len(client.requests) == 3
+        assert isinstance(client.requests[0], DummyGetPeerStoriesRequest)
+        assert isinstance(client.requests[1], DummyGetStoriesRequest)
+        assert isinstance(client.requests[2], DummyReadStoriesRequest)
+        assert client.requests[1].peer == "peer:@contact_b"
+        assert client.requests[1].id == [501]
+        assert client.requests[2].peer == "peer:@contact_b"
+        assert client.requests[2].max_id == 501
+
+    asyncio.run(scenario())
+
+
 def test_warmup_update_status_switches_online_and_offline(monkeypatch: pytest.MonkeyPatch):
     class StubManager:
         def __init__(self, client):

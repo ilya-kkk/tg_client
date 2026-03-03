@@ -527,11 +527,15 @@ class WarmupWorker:
             )
             return False
 
-    async def _warmup_view_story(self, session_id: str, job: dict) -> None:
-        telethon = self._load_telethon()
-        if telethon is None:
-            return
+    async def warmup_view_story(self, session_id: str, chat: str) -> bool:
+        """Просматривает одну случайную сторис контакта/канала через GetStoriesRequest."""
+        return await self._run_warmup_view_story(
+            session_id=session_id,
+            chat=chat,
+            job_id="",
+        )
 
+    async def _warmup_view_story(self, session_id: str, job: dict) -> None:
         target_chat = self._pick_target_channel(job)
         if not target_chat:
             logger.debug(
@@ -540,18 +544,49 @@ class WarmupWorker:
             )
             return
 
-        client = await self._get_session_client(session_id, job)
+        await self._run_warmup_view_story(
+            session_id=session_id,
+            chat=target_chat,
+            job_id=self._get_job_id(job),
+        )
+
+    async def _run_warmup_view_story(self, session_id: str, chat: str, job_id: str) -> bool:
+        telethon = self._load_telethon()
+        if telethon is None:
+            return False
+
+        client = await self._get_session_client(session_id, {"id": job_id} if job_id else {})
         if client is None:
-            return
+            return False
 
         functions = telethon["functions"]
-        chat_identifier = self._parse_chat_identifier(target_chat)
+        stories_functions = getattr(functions, "stories", None)
+        if stories_functions is None:
+            logger.debug(
+                "Пропуск view_story: job_id=%s session_id=%s chat=%s нет stories API",
+                job_id,
+                session_id,
+                chat,
+            )
+            return False
+
+        normalized_chat = self._normalize_chat_identifier(chat)
+        chat_identifier = self._parse_chat_identifier(normalized_chat)
 
         try:
             peer = await client.get_input_entity(chat_identifier)
-            get_peer_stories_cls = getattr(functions.stories, "GetPeerStoriesRequest", None)
-            get_stories_cls = getattr(functions.stories, "GetStoriesRequest", None)
-            read_stories_cls = getattr(functions.stories, "ReadStoriesRequest", None)
+            get_stories_cls = getattr(stories_functions, "GetStoriesRequest", None)
+            get_peer_stories_cls = getattr(stories_functions, "GetPeerStoriesRequest", None)
+            read_stories_cls = getattr(stories_functions, "ReadStoriesRequest", None)
+
+            if get_stories_cls is None:
+                logger.debug(
+                    "Пропуск view_story: job_id=%s session_id=%s chat=%s нет GetStoriesRequest",
+                    job_id,
+                    session_id,
+                    normalized_chat,
+                )
+                return False
 
             story_ids: list[int] = []
             if get_peer_stories_cls is not None:
@@ -568,21 +603,20 @@ class WarmupWorker:
             if not story_ids:
                 logger.debug(
                     "Warmup view_story: сторис не найдены: job_id=%s session_id=%s chat=%s",
-                    self._get_job_id(job),
+                    job_id,
                     session_id,
-                    target_chat,
+                    normalized_chat,
                 )
-                return
+                return False
 
             selected_story_id = random.choice(story_ids)
-            if get_stories_cls is not None:
-                await client(
-                    self._build_request(
-                        get_stories_cls,
-                        peer=peer,
-                        id=[selected_story_id],
-                    )
+            await client(
+                self._build_request(
+                    get_stories_cls,
+                    peer=peer,
+                    id=[selected_story_id],
                 )
+            )
 
             if read_stories_cls is not None:
                 await client(
@@ -595,21 +629,23 @@ class WarmupWorker:
 
             logger.info(
                 "Warmup view_story выполнен: job_id=%s session_id=%s chat=%s story_id=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_chat,
+                normalized_chat,
                 selected_story_id,
             )
+            return True
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning(
                 "Ошибка warmup view_story: job_id=%s session_id=%s chat=%s error=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_chat,
+                normalized_chat,
                 e,
             )
+            return False
 
     async def _warmup_search_global(self, session_id: str, job: dict) -> None:
         telethon = self._load_telethon()
