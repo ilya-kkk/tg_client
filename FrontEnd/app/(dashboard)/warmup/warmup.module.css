@@ -1,0 +1,237 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.7rem;
+}
+
+.createButton {
+  border: none;
+  border-radius: 0.6rem;
+  padding: 0.65rem 1rem;
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+  color: #052e16;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.createButton:hover {
+  filter: brightness(1.05);
+}
+
+.skeletonList {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.skeletonCard {
+  height: 74px;
+  border-radius: 0.75rem;
+  background: linear-gradient(90deg, #0f172a, #13233e, #0f172a);
+  background-size: 200% 100%;
+  animation: pulse 1.2s linear infinite;
+}
+
+@keyframes pulse {
+  0% {
+    background-position: 200% 0;
+  }
+
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.errorState,
+.emptyState {
+  border: 1px solid #334155;
+  border-radius: 0.75rem;
+  background: #0f172a;
+  padding: 0.9rem;
+}
+
+.errorState p {
+  margin: 0;
+  color: #fca5a5;
+}
+
+.retryButton {
+  margin-top: 0.7rem;
+  border: 1px solid #334155;
+  border-radius: 0.55rem;
+  padding: 0.5rem 0.85rem;
+  color: #e2e8f0;
+  background: #111827;
+  cursor: pointer;
+}
+
+.retryButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.cardsList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+  border: 1px solid #223149;
+  border-radius: 0.8rem;
+  background: #0b1223;
+  padding: 0.8rem;
+}
+
+.leftBlock {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: 1rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modeBadge {
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.modeCautious {
+  color: #dcfce7;
+  background: #166534;
+}
+
+.modeNormal {
+  color: #fef3c7;
+  background: #92400e;
+}
+
+.modeAggressive {
+  color: #fee2e2;
+  background: #991b1b;
+}
+
+.rightBlock {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.accountCounter {
+  border: 1px solid #334155;
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.82rem;
+  color: #cbd5e1;
+}
+
+.iconButton,
+.iconButtonDanger {
+  border: 1px solid #334155;
+  border-radius: 0.55rem;
+  padding: 0.35rem 0.55rem;
+  cursor: pointer;
+  background: #111827;
+}
+
+.iconButtonDanger {
+  border-color: #7f1d1d;
+}
+
+.toggleWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.toggleInput {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggleSlider {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: #475569;
+  transition: background-color 0.2s ease;
+}
+
+.toggleSlider::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #f8fafc;
+  transition: transform 0.2s ease;
+}
+
+.toggleInput:checked + .toggleSlider {
+  background: #16a34a;
+}
+
+.toggleInput:checked + .toggleSlider::after {
+  transform: translateX(16px);
+}
+
+.toggleLabel {
+  font-size: 0.82rem;
+  color: #cbd5e1;
+}
+
+@media (max-width: 760px) {
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .createButton {
+    width: 100%;
+  }
+
+  .card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .leftBlock,
+  .rightBlock {
+    width: 100%;
+  }
+
+  .rightBlock {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
