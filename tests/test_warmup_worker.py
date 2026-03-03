@@ -69,7 +69,12 @@ def test_run_job_randomly_chooses_session_action_and_delay(monkeypatch: pytest.M
             randint_calls.append((min_value, max_value))
             return min_value + 7
 
-        async def fake_run_action(action_type: str, session_id: str, current_job: dict) -> None:
+        async def fake_run_action(
+            action_type: str,
+            session_id: str,
+            current_job: dict,
+            excluded_chats: set[str] | None = None,
+        ) -> None:
             observed["action_type"] = action_type
             observed["session_id"] = session_id
             observed["job_id"] = current_job["id"]
@@ -97,6 +102,156 @@ def test_run_job_randomly_chooses_session_action_and_delay(monkeypatch: pytest.M
         }
         assert randint_calls == [expected_range]
         assert sleep_calls == [expected_range[0] + 7]
+
+    asyncio.run(scenario())
+
+
+def test_run_job_pauses_session_on_flood_wait_and_uses_other_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FloodWaitError(Exception):
+        def __init__(self, seconds: int):
+            super().__init__(f"flood for {seconds}s")
+            self.seconds = seconds
+
+    async def scenario():
+        worker = WarmupWorker()
+        job = {
+            "id": "job-1",
+            "mode": "normal",
+            "account_sessions": ["session-1", "session-2"],
+            "enabled_actions": ["update_status"],
+        }
+        action_calls: list[str] = []
+        sleep_calls: list[int] = []
+        sleep_index = 0
+
+        def fake_choice(values):
+            if values == ["update_status"]:
+                return "update_status"
+            if values == ["session-1", "session-2"]:
+                return "session-1"
+            if values == ["session-2"]:
+                return "session-2"
+            return values[0]
+
+        async def fake_run_action(
+            action_type: str,
+            session_id: str,
+            current_job: dict,
+            excluded_chats: set[str] | None = None,
+        ) -> None:
+            action_calls.append(session_id)
+            if len(action_calls) == 1:
+                raise FloodWaitError(seconds=7)
+
+        async def fake_sleep(seconds: int) -> None:
+            nonlocal sleep_index
+            sleep_calls.append(seconds)
+            sleep_index += 1
+            if sleep_index >= 2:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(warmup_worker_module.random, "choice", fake_choice)
+        monkeypatch.setattr(warmup_worker_module.random, "randint", lambda min_v, max_v: min_v)
+        monkeypatch.setattr(worker, "_run_action", fake_run_action)
+        monkeypatch.setattr(warmup_worker_module.asyncio, "sleep", fake_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            await worker._run_job(job)
+
+        assert action_calls == ["session-1", "session-2"]
+        assert worker._get_session_pause_remaining("session-1") >= 60
+        assert len(sleep_calls) == 2
+
+    asyncio.run(scenario())
+
+
+def test_run_job_skips_chat_error_and_removes_chat_from_iteration_queue(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class ChatWriteForbiddenError(Exception):
+        pass
+
+    async def scenario():
+        worker = WarmupWorker()
+        job = {
+            "id": "job-1",
+            "mode": "normal",
+            "account_sessions": ["session-1"],
+            "enabled_actions": ["react_to_message"],
+        }
+        seen_excluded_sets: list[set[str]] = []
+
+        async def fake_run_action(
+            action_type: str,
+            session_id: str,
+            current_job: dict,
+            excluded_chats: set[str] | None = None,
+        ) -> None:
+            if excluded_chats is not None:
+                seen_excluded_sets.append(excluded_chats)
+            error = ChatWriteForbiddenError("chat is readonly")
+            setattr(error, "_warmup_chat", "@blocked_chat")
+            raise error
+
+        async def fake_sleep(seconds: int) -> None:
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(warmup_worker_module.random, "choice", lambda values: values[0])
+        monkeypatch.setattr(warmup_worker_module.random, "randint", lambda min_v, max_v: min_v)
+        monkeypatch.setattr(worker, "_run_action", fake_run_action)
+        monkeypatch.setattr(warmup_worker_module.asyncio, "sleep", fake_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            await worker._run_job(job)
+
+        assert len(seen_excluded_sets) == 1
+        assert "@blocked_chat" in seen_excluded_sets[0]
+
+    asyncio.run(scenario())
+
+
+def test_run_job_logs_unknown_errors_and_continues_next_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def scenario():
+        worker = WarmupWorker()
+        job = {
+            "id": "job-1",
+            "mode": "normal",
+            "account_sessions": ["session-1"],
+            "enabled_actions": ["update_status"],
+        }
+        action_calls = 0
+        sleep_calls = 0
+
+        async def fake_run_action(
+            action_type: str,
+            session_id: str,
+            current_job: dict,
+            excluded_chats: set[str] | None = None,
+        ) -> None:
+            nonlocal action_calls
+            action_calls += 1
+            if action_calls == 1:
+                raise RuntimeError("unexpected failure")
+
+        async def fake_sleep(seconds: int) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 2:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(warmup_worker_module.random, "choice", lambda values: values[0])
+        monkeypatch.setattr(warmup_worker_module.random, "randint", lambda min_v, max_v: min_v)
+        monkeypatch.setattr(worker, "_run_action", fake_run_action)
+        monkeypatch.setattr(warmup_worker_module.asyncio, "sleep", fake_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            await worker._run_job(job)
+
+        assert action_calls == 2
 
     asyncio.run(scenario())
 

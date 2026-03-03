@@ -3,6 +3,7 @@ import inspect
 import logging
 import random
 import re
+import time
 from contextlib import suppress
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -17,6 +18,12 @@ logger = logging.getLogger(__name__)
 
 class WarmupWorker:
     """Управляет фоновыми asyncio-задачами прогрева по job_id."""
+
+    _FLOOD_WAIT_ERROR_NAME = "FloodWaitError"
+    _SKIP_CHAT_ERROR_NAMES: set[str] = {
+        "UserBannedInChannelError",
+        "ChatWriteForbiddenError",
+    }
 
     _ACTION_METHODS: dict[str, str] = {
         "read_messages": "_warmup_read_messages",
@@ -96,6 +103,7 @@ class WarmupWorker:
     def __init__(self, client_manager: Optional["MultiSessionManager"] = None) -> None:
         self._running: dict[str, asyncio.Task[Any]] = {}
         self._client_manager = client_manager
+        self._session_pause_until: dict[str, float] = {}
 
     @property
     def running(self) -> dict[str, asyncio.Task[Any]]:
@@ -134,11 +142,90 @@ class WarmupWorker:
         raw = self._normalize_str_list(job.get("target_channels"))
         return [self._normalize_chat_identifier(item) for item in raw if self._normalize_chat_identifier(item)]
 
-    def _pick_target_channel(self, job: dict) -> Optional[str]:
+    def _pick_target_channel(self, job: dict, excluded_chats: Optional[set[str]] = None) -> Optional[str]:
         targets = self._normalize_target_channels(job)
+        if excluded_chats:
+            targets = [item for item in targets if item not in excluded_chats]
         if not targets:
             return None
         return random.choice(targets)
+
+    @staticmethod
+    def _current_monotonic_time() -> float:
+        return time.monotonic()
+
+    @staticmethod
+    def _error_name(error: BaseException) -> str:
+        return type(error).__name__
+
+    @classmethod
+    def _is_flood_wait_error(cls, error: BaseException) -> bool:
+        return cls._error_name(error) == cls._FLOOD_WAIT_ERROR_NAME
+
+    @classmethod
+    def _is_skip_chat_error(cls, error: BaseException) -> bool:
+        return cls._error_name(error) in cls._SKIP_CHAT_ERROR_NAMES
+
+    @classmethod
+    def _extract_flood_wait_seconds(cls, error: BaseException) -> int:
+        if not cls._is_flood_wait_error(error):
+            return 0
+
+        raw_seconds = getattr(error, "seconds", 0)
+        try:
+            seconds = int(raw_seconds)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, seconds)
+
+    @staticmethod
+    def _mark_error_chat(error: BaseException, chat: str) -> None:
+        if not chat:
+            return
+        try:
+            setattr(error, "_warmup_chat", chat)
+        except Exception:
+            return
+
+    def _get_error_chat(self, error: BaseException) -> str:
+        raw_chat = str(getattr(error, "_warmup_chat", "") or "").strip()
+        if not raw_chat:
+            return ""
+        return self._normalize_chat_identifier(raw_chat)
+
+    def _get_session_pause_remaining(self, session_id: str) -> int:
+        paused_until = self._session_pause_until.get(session_id)
+        if paused_until is None:
+            return 0
+
+        remaining = int(paused_until - self._current_monotonic_time())
+        if remaining <= 0:
+            self._session_pause_until.pop(session_id, None)
+            return 0
+        return remaining
+
+    def _pause_session_for_flood_wait(
+        self,
+        session_id: str,
+        flood_wait_seconds: int,
+    ) -> int:
+        pause_seconds = max(1, int(flood_wait_seconds) + 60)
+        current_pause_until = self._session_pause_until.get(session_id, 0.0)
+        next_pause_until = self._current_monotonic_time() + pause_seconds
+        self._session_pause_until[session_id] = max(current_pause_until, next_pause_until)
+        return pause_seconds
+
+    def _raise_known_iteration_errors(
+        self,
+        error: Exception,
+        *,
+        chat: str = "",
+    ) -> None:
+        if self._is_skip_chat_error(error):
+            self._mark_error_chat(error, chat)
+            raise error
+        if self._is_flood_wait_error(error):
+            raise error
 
     @staticmethod
     def _parse_chat_identifier(value: str) -> str | int:
@@ -227,7 +314,14 @@ class WarmupWorker:
         for job_id in list(self._running.keys()):
             await self.stop(job_id)
 
-    async def _run_action(self, action_type: str, session_id: str, job: dict) -> None:
+    async def _run_action(
+        self,
+        action_type: str,
+        session_id: str,
+        job: dict,
+        *,
+        excluded_chats: Optional[set[str]] = None,
+    ) -> None:
         method_name = self._ACTION_METHODS.get(action_type)
         if method_name is None:
             logger.warning(
@@ -247,18 +341,38 @@ class WarmupWorker:
             )
             return
 
-        await handler(session_id, job)
+        handler_signature = inspect.signature(handler)
+        if "excluded_chats" in handler_signature.parameters:
+            await handler(session_id, job, excluded_chats=excluded_chats)
+        else:
+            await handler(session_id, job)
 
     async def warmup_read_messages(self, session_id: str, chat: str) -> int:
         """Открывает диалог и имитирует чтение до 15 последних сообщений."""
-        return await self._run_warmup_read_messages(
-            session_id=session_id,
-            chat=chat,
-            job_id="",
-        )
+        try:
+            return await self._run_warmup_read_messages(
+                session_id=session_id,
+                chat=chat,
+                job_id="",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Ошибка warmup read_messages: session_id=%s chat=%s error=%s",
+                session_id,
+                self._normalize_chat_identifier(chat),
+                e,
+            )
+            return 0
 
-    async def _warmup_read_messages(self, session_id: str, job: dict) -> None:
-        target_chat = self._pick_target_channel(job)
+    async def _warmup_read_messages(
+        self,
+        session_id: str,
+        job: dict,
+        excluded_chats: Optional[set[str]] = None,
+    ) -> None:
+        target_chat = self._pick_target_channel(job, excluded_chats=excluded_chats)
         if not target_chat:
             logger.debug(
                 "Пропуск read_messages: job_id=%s нет target_channels",
@@ -315,6 +429,7 @@ class WarmupWorker:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            self._raise_known_iteration_errors(e, chat=normalized_chat)
             logger.warning(
                 "Ошибка warmup read_messages: job_id=%s session_id=%s chat=%s error=%s",
                 job_id,
@@ -326,14 +441,30 @@ class WarmupWorker:
 
     async def warmup_react_to_message(self, session_id: str, chat: str) -> bool:
         """Ставит случайную базовую реакцию на случайное входящее сообщение из последних."""
-        return await self._run_warmup_react_to_message(
-            session_id=session_id,
-            chat=chat,
-            job_id="",
-        )
+        try:
+            return await self._run_warmup_react_to_message(
+                session_id=session_id,
+                chat=chat,
+                job_id="",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Ошибка warmup react_to_message: session_id=%s chat=%s error=%s",
+                session_id,
+                self._normalize_chat_identifier(chat),
+                e,
+            )
+            return False
 
-    async def _warmup_react_to_message(self, session_id: str, job: dict) -> None:
-        target_chat = self._pick_target_channel(job)
+    async def _warmup_react_to_message(
+        self,
+        session_id: str,
+        job: dict,
+        excluded_chats: Optional[set[str]] = None,
+    ) -> None:
+        target_chat = self._pick_target_channel(job, excluded_chats=excluded_chats)
         if not target_chat:
             logger.debug(
                 "Пропуск react_to_message: job_id=%s нет target_channels",
@@ -428,6 +559,7 @@ class WarmupWorker:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            self._raise_known_iteration_errors(e, chat=normalized_chat)
             logger.warning(
                 "Ошибка warmup react_to_message: job_id=%s session_id=%s chat=%s error=%s",
                 job_id,
@@ -439,14 +571,30 @@ class WarmupWorker:
 
     async def warmup_join_channel(self, session_id: str, channel: str) -> bool:
         """Подписывается на канал через JoinChannelRequest."""
-        return await self._run_warmup_join_channel(
-            session_id=session_id,
-            channel=channel,
-            job_id="",
-        )
+        try:
+            return await self._run_warmup_join_channel(
+                session_id=session_id,
+                channel=channel,
+                job_id="",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Ошибка warmup join_channel: session_id=%s channel=%s error=%s",
+                session_id,
+                self._normalize_chat_identifier(channel),
+                e,
+            )
+            return False
 
-    async def _warmup_join_channel(self, session_id: str, job: dict) -> None:
-        target_channel = self._pick_target_channel(job)
+    async def _warmup_join_channel(
+        self,
+        session_id: str,
+        job: dict,
+        excluded_chats: Optional[set[str]] = None,
+    ) -> None:
+        target_channel = self._pick_target_channel(job, excluded_chats=excluded_chats)
         if not target_channel:
             logger.debug(
                 "Пропуск join_channel: job_id=%s нет target_channels",
@@ -509,6 +657,7 @@ class WarmupWorker:
                     normalized_channel,
                 )
                 return False
+            self._raise_known_iteration_errors(e, chat=normalized_channel)
             logger.warning(
                 "Ошибка warmup join_channel: job_id=%s session_id=%s channel=%s error=%s",
                 job_id,
@@ -518,6 +667,7 @@ class WarmupWorker:
             )
             return False
         except Exception as e:
+            self._raise_known_iteration_errors(e, chat=normalized_channel)
             logger.warning(
                 "Ошибка warmup join_channel: job_id=%s session_id=%s channel=%s error=%s",
                 job_id,
@@ -529,14 +679,30 @@ class WarmupWorker:
 
     async def warmup_view_story(self, session_id: str, chat: str) -> bool:
         """Просматривает одну случайную сторис контакта/канала через GetStoriesRequest."""
-        return await self._run_warmup_view_story(
-            session_id=session_id,
-            chat=chat,
-            job_id="",
-        )
+        try:
+            return await self._run_warmup_view_story(
+                session_id=session_id,
+                chat=chat,
+                job_id="",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Ошибка warmup view_story: session_id=%s chat=%s error=%s",
+                session_id,
+                self._normalize_chat_identifier(chat),
+                e,
+            )
+            return False
 
-    async def _warmup_view_story(self, session_id: str, job: dict) -> None:
-        target_chat = self._pick_target_channel(job)
+    async def _warmup_view_story(
+        self,
+        session_id: str,
+        job: dict,
+        excluded_chats: Optional[set[str]] = None,
+    ) -> None:
+        target_chat = self._pick_target_channel(job, excluded_chats=excluded_chats)
         if not target_chat:
             logger.debug(
                 "Пропуск view_story: job_id=%s нет target_channels",
@@ -638,6 +804,7 @@ class WarmupWorker:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            self._raise_known_iteration_errors(e, chat=normalized_chat)
             logger.warning(
                 "Ошибка warmup view_story: job_id=%s session_id=%s chat=%s error=%s",
                 job_id,
@@ -649,10 +816,20 @@ class WarmupWorker:
 
     async def warmup_search_global(self, session_id: str) -> bool:
         """Выполняет глобальный поиск по случайному слову из встроенного словаря."""
-        return await self._run_warmup_search_global(
-            session_id=session_id,
-            job_id="",
-        )
+        try:
+            return await self._run_warmup_search_global(
+                session_id=session_id,
+                job_id="",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Ошибка warmup search_global: session_id=%s error=%s",
+                session_id,
+                e,
+            )
+            return False
 
     async def _warmup_search_global(self, session_id: str, job: dict) -> None:
         await self._run_warmup_search_global(
@@ -699,6 +876,7 @@ class WarmupWorker:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            self._raise_known_iteration_errors(e)
             logger.warning(
                 "Ошибка warmup search_global: job_id=%s session_id=%s query=%s error=%s",
                 job_id,
@@ -710,10 +888,20 @@ class WarmupWorker:
 
     async def warmup_update_status(self, session_id: str) -> bool:
         """Переключает статус аккаунта в online, затем обратно в offline."""
-        return await self._run_warmup_update_status(
-            session_id=session_id,
-            job_id="",
-        )
+        try:
+            return await self._run_warmup_update_status(
+                session_id=session_id,
+                job_id="",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Ошибка warmup update_status: session_id=%s error=%s",
+                session_id,
+                e,
+            )
+            return False
 
     async def _warmup_update_status(self, session_id: str, job: dict) -> None:
         await self._run_warmup_update_status(
@@ -750,6 +938,7 @@ class WarmupWorker:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            self._raise_known_iteration_errors(e)
             logger.warning(
                 "Ошибка warmup update_status: job_id=%s session_id=%s error=%s",
                 job_id,
@@ -771,11 +960,70 @@ class WarmupWorker:
             while True:
                 account_sessions = self._normalize_str_list(job.get("account_sessions"))
                 enabled_actions = self._normalize_str_list(job.get("enabled_actions"))
+                iteration_excluded_chats: set[str] = set()
 
                 if account_sessions and enabled_actions:
-                    session_id = random.choice(account_sessions)
-                    action_type = random.choice(enabled_actions)
-                    await self._run_action(action_type, session_id, job)
+                    available_sessions = [
+                        session_id
+                        for session_id in account_sessions
+                        if self._get_session_pause_remaining(session_id) <= 0
+                    ]
+                    if available_sessions:
+                        session_id = random.choice(available_sessions)
+                        action_type = random.choice(enabled_actions)
+                        try:
+                            await self._run_action(
+                                action_type,
+                                session_id,
+                                job,
+                                excluded_chats=iteration_excluded_chats,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            if self._is_flood_wait_error(e):
+                                flood_wait_seconds = self._extract_flood_wait_seconds(e)
+                                pause_seconds = self._pause_session_for_flood_wait(
+                                    session_id=session_id,
+                                    flood_wait_seconds=flood_wait_seconds,
+                                )
+                                logger.warning(
+                                    "FloodWait в warmup-действии: job_id=%s session_id=%s wait_seconds=%s pause_seconds=%s",
+                                    job_id,
+                                    session_id,
+                                    flood_wait_seconds,
+                                    pause_seconds,
+                                )
+                            elif self._is_skip_chat_error(e):
+                                excluded_chat = self._get_error_chat(e)
+                                if excluded_chat:
+                                    iteration_excluded_chats.add(excluded_chat)
+                                logger.warning(
+                                    "Пропуск warmup-действия из-за ограничений чата: job_id=%s session_id=%s action=%s chat=%s error=%s",
+                                    job_id,
+                                    session_id,
+                                    action_type,
+                                    excluded_chat or "<unknown>",
+                                    e,
+                                )
+                            else:
+                                logger.warning(
+                                    "Ошибка warmup-действия, переход к следующей итерации: job_id=%s session_id=%s action=%s error=%s",
+                                    job_id,
+                                    session_id,
+                                    action_type,
+                                    e,
+                                )
+                    else:
+                        min_remaining = min(
+                            self._get_session_pause_remaining(session_id)
+                            for session_id in account_sessions
+                        )
+                        logger.debug(
+                            "Пропуск итерации warmup-воркера: job_id=%s все session_id на паузе min_remaining=%s",
+                            job_id,
+                            min_remaining,
+                        )
                 else:
                     logger.debug(
                         "Пропуск итерации warmup-воркера: job_id=%s отсутствуют account_sessions или enabled_actions",
