@@ -1,10 +1,12 @@
 import asyncio
 import base64
 import binascii
+import random
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import (
     SessionPasswordNeededError,
@@ -28,6 +30,15 @@ from app.config import API_ID, API_HASH
 from app.supabase_client import SessionRepo
 
 AUTH_REQUEST_TIMEOUT_SECONDS = 30
+POPULAR_REACTIONS: List[str] = ["👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "💯", "🎉"]
+
+
+@dataclass
+class ReactionListenerState:
+    client: TelegramClient
+    handler: Any
+    session_id: str
+    chat_identifier: str
 
 
 class MultiSessionManager:
@@ -44,6 +55,9 @@ class MultiSessionManager:
         self._auth_clients: Dict[str, TelegramClient] = {}
         self._authorized_sessions: set[str] = set()
         self._auth_state: Dict[str, Dict[str, str]] = {}
+        self._reaction_job_listeners: Dict[str, List[ReactionListenerState]] = {}
+        self._reaction_job_signatures: Dict[str, str] = {}
+        self._reaction_counters: Dict[str, int] = {}
 
     def _get_session_repo(self) -> SessionRepo:
         if self.session_repo is None:
@@ -3209,6 +3223,8 @@ class MultiSessionManager:
     
     async def disconnect(self):
         """Отключает клиент"""
+        for job_id in list(self._reaction_job_listeners.keys()):
+            await self.stop_reaction_job_listeners(job_id)
         for client in list(self._clients.values()):
             await client.disconnect()
         for client in list(self._auth_clients.values()):
@@ -3231,4 +3247,136 @@ class MultiSessionManager:
             return True
 
         return False
+
+    def _normalize_chat_identifier_for_reactions(self, value: str) -> str:
+        chat = (value or "").strip()
+        if chat.startswith("https://t.me/"):
+            chat = "@" + chat.removeprefix("https://t.me/").split("?")[0].strip("/")
+        elif chat.startswith("http://t.me/"):
+            chat = "@" + chat.removeprefix("http://t.me/").split("?")[0].strip("/")
+        elif chat.startswith("t.me/"):
+            chat = "@" + chat.removeprefix("t.me/").split("?")[0].strip("/")
+        return chat
+
+    def _build_reaction_job_signature(self, job: Dict[str, Any]) -> str:
+        session_part = ",".join(sorted(job.get("account_sessions") or []))
+        chats = [self._normalize_chat_identifier_for_reactions(chat) for chat in (job.get("target_chats") or [])]
+        chat_part = ",".join(sorted(chats))
+        reaction_part = ",".join(job.get("reactions") or [])
+        frequency = str(job.get("message_frequency") or "")
+        is_active = str(bool(job.get("is_active")))
+        return f"{session_part}|{chat_part}|{reaction_part}|{frequency}|{is_active}"
+
+    def _should_react(self, counter_key: str, message_frequency: str) -> bool:
+        next_counter = self._reaction_counters.get(counter_key, 0) + 1
+        self._reaction_counters[counter_key] = next_counter
+
+        if message_frequency == "every":
+            return True
+        if message_frequency == "1/2":
+            return next_counter % 2 == 0
+        if message_frequency == "1/3":
+            return next_counter % 3 == 0
+        if message_frequency == "2/3":
+            return next_counter % 3 in {1, 2}
+        return False
+
+    async def stop_reaction_job_listeners(self, job_id: str) -> None:
+        listeners = self._reaction_job_listeners.pop(job_id, [])
+        for listener in listeners:
+            try:
+                listener.client.remove_event_handler(listener.handler)
+            except Exception:
+                # Хендлер уже мог быть удален в другом контексте.
+                continue
+        self._reaction_job_signatures.pop(job_id, None)
+        prefix = f"{job_id}:"
+        for key in list(self._reaction_counters.keys()):
+            if key.startswith(prefix):
+                self._reaction_counters.pop(key, None)
+
+    async def react_to_new_messages(
+        self,
+        job_id: str,
+        session_id: str,
+        chat_identifier: str,
+        reactions: List[str],
+        message_frequency: str,
+    ) -> Optional[ReactionListenerState]:
+        if not reactions:
+            return None
+
+        normalized_chat = self._normalize_chat_identifier_for_reactions(chat_identifier)
+        if not normalized_chat:
+            return None
+
+        try:
+            client = await self.get_client(session_id)
+            entity = await client.get_entity(normalized_chat)
+        except ValueError:
+            return None
+        except Exception:
+            return None
+
+        counter_key = f"{job_id}:{session_id}:{normalized_chat}"
+
+        async def _handler(event: events.NewMessage.Event) -> None:
+            if not self._should_react(counter_key, message_frequency):
+                return
+            emoji = random.choice(reactions)
+            try:
+                await client.send_reaction(entity, event.message.id, reaction=emoji)
+            except FloodWaitError as e:
+                await asyncio.sleep(max(1, e.seconds))
+            except (ValueError, RPCError):
+                return
+            except Exception:
+                return
+
+        client.add_event_handler(_handler, events.NewMessage(chats=entity))
+        return ReactionListenerState(
+            client=client,
+            handler=_handler,
+            session_id=session_id,
+            chat_identifier=normalized_chat,
+        )
+
+    async def ensure_reaction_job_listeners(self, job: Dict[str, Any]) -> None:
+        job_id = str(job.get("id") or "").strip()
+        if not job_id:
+            return
+
+        if not bool(job.get("is_active")):
+            await self.stop_reaction_job_listeners(job_id)
+            return
+
+        signature = self._build_reaction_job_signature(job)
+        if self._reaction_job_signatures.get(job_id) == signature and job_id in self._reaction_job_listeners:
+            return
+
+        await self.stop_reaction_job_listeners(job_id)
+        reactions = [str(item).strip() for item in (job.get("reactions") or []) if str(item).strip()]
+        message_frequency = str(job.get("message_frequency") or "every")
+        session_ids = [str(item).strip() for item in (job.get("account_sessions") or []) if str(item).strip()]
+        target_chats = [str(item).strip() for item in (job.get("target_chats") or []) if str(item).strip()]
+
+        if not reactions or not session_ids or not target_chats:
+            return
+
+        created: List[ReactionListenerState] = []
+        for session_id in session_ids:
+            for chat_identifier in target_chats:
+                listener = await self.react_to_new_messages(
+                    job_id=job_id,
+                    session_id=session_id,
+                    chat_identifier=chat_identifier,
+                    reactions=reactions,
+                    message_frequency=message_frequency,
+                )
+                if listener is not None:
+                    created.append(listener)
+
+        if created:
+            self._reaction_job_listeners[job_id] = created
+            self._reaction_job_signatures[job_id] = signature
     

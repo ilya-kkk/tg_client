@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -106,12 +107,15 @@ from app.models import (
     SaveParsedChannelsResponse,
     ParsedChannelsListResponse,
     DeleteParsedChannelsResponse,
+    ReactionJobCreate,
+    ReactionJobUpdate,
+    ReactionJobOut,
     SessionInfo,
     SessionListResponse,
     SessionStatusResponse,
     DeleteSessionResponse,
 )
-from app.supabase_client import SessionRepo, ParsedChannelsRepo
+from app.supabase_client import SessionRepo, ParsedChannelsRepo, ReactionJobsRepo
 from app.telegram_client import MultiSessionManager
 import logging
 from app.config import CORS_ALLOW_ORIGINS
@@ -122,6 +126,8 @@ logger = logging.getLogger(__name__)
 client_manager: MultiSessionManager | None = None
 session_repo: SessionRepo | None = None
 parsed_channels_repo: ParsedChannelsRepo | None = None
+reaction_jobs_repo: ReactionJobsRepo | None = None
+reaction_jobs_task: asyncio.Task | None = None
 
 
 tags_metadata = [
@@ -160,24 +166,64 @@ tags_metadata = [
 ]
 
 
+async def reaction_jobs_worker() -> None:
+    """Фоновый цикл, который поддерживает слушатели активных кампаний."""
+    poll_interval_seconds = 20
+    while True:
+        try:
+            if reaction_jobs_repo is None or client_manager is None:
+                await asyncio.sleep(poll_interval_seconds)
+                continue
+
+            active_jobs = reaction_jobs_repo.list_active()
+            active_job_ids = {
+                str(job.get("id") or "").strip()
+                for job in active_jobs
+                if str(job.get("id") or "").strip()
+            }
+
+            for job in active_jobs:
+                await client_manager.ensure_reaction_job_listeners(job)
+
+            for job_id in list(client_manager._reaction_job_listeners.keys()):
+                if job_id not in active_job_ids:
+                    await client_manager.stop_reaction_job_listeners(job_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Ошибка в воркере авто-реакций: %s", e)
+
+        await asyncio.sleep(poll_interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global client_manager, session_repo, parsed_channels_repo
+    global client_manager, session_repo, parsed_channels_repo, reaction_jobs_repo, reaction_jobs_task
 
     # При старте приложения
     logger.info("Инициализация SessionRepo и MultiSessionManager...")
     session_repo = SessionRepo()
     parsed_channels_repo = ParsedChannelsRepo()
+    reaction_jobs_repo = ReactionJobsRepo()
     client_manager = MultiSessionManager(session_repo=session_repo)
     app.state.session_repo = session_repo
     app.state.parsed_channels_repo = parsed_channels_repo
+    app.state.reaction_jobs_repo = reaction_jobs_repo
     app.state.client_manager = client_manager
+    reaction_jobs_task = asyncio.create_task(reaction_jobs_worker())
     
     yield
     
     # При остановке приложения
     logger.info("Отключение Telegram клиента...")
+    if reaction_jobs_task is not None:
+        reaction_jobs_task.cancel()
+        try:
+            await reaction_jobs_task
+        except asyncio.CancelledError:
+            pass
+        reaction_jobs_task = None
     if client_manager is not None:
         await client_manager.disconnect()
 
@@ -1772,6 +1818,127 @@ async def delete_parsed_channels(session_id: str, global_delete: bool = False):
         )
     except Exception as e:
         logger.error(f"Ошибка при удалении parsed-каналов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/users/{user_id}/reaction-jobs",
+    response_model=list[ReactionJobOut],
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def list_reaction_jobs(user_id: str):
+    if reaction_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище reaction_jobs не инициализировано",
+        )
+    try:
+        rows = reaction_jobs_repo.list_by_user(user_id)
+        return [ReactionJobOut(**row) for row in rows]
+    except Exception as e:
+        logger.error("Ошибка при получении reaction_jobs: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/users/{user_id}/reaction-jobs",
+    response_model=ReactionJobOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["users"],
+)
+async def create_reaction_job(user_id: str, request: ReactionJobCreate):
+    if reaction_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище reaction_jobs не инициализировано",
+        )
+    try:
+        row = reaction_jobs_repo.create(user_id=user_id, payload=request.model_dump())
+        return ReactionJobOut(**row)
+    except Exception as e:
+        logger.error("Ошибка при создании reaction_job: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.patch(
+    "/users/{user_id}/reaction-jobs/{job_id}",
+    response_model=ReactionJobOut,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def update_reaction_job(user_id: str, job_id: str, request: ReactionJobUpdate):
+    if reaction_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище reaction_jobs не инициализировано",
+        )
+    payload = request.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Не переданы данные для обновления",
+        )
+
+    try:
+        row = reaction_jobs_repo.update(user_id=user_id, job_id=job_id, payload=payload)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Кампания не найдена",
+            )
+
+        if client_manager is not None:
+            if row.get("is_active"):
+                await client_manager.ensure_reaction_job_listeners(row)
+            else:
+                await client_manager.stop_reaction_job_listeners(str(row.get("id")))
+
+        return ReactionJobOut(**row)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Ошибка при обновлении reaction_job: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.delete(
+    "/users/{user_id}/reaction-jobs/{job_id}",
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def delete_reaction_job(user_id: str, job_id: str):
+    if reaction_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище reaction_jobs не инициализировано",
+        )
+    try:
+        deleted = reaction_jobs_repo.delete(user_id=user_id, job_id=job_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Кампания не найдена",
+            )
+        if client_manager is not None:
+            await client_manager.stop_reaction_job_listeners(job_id)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Ошибка при удалении reaction_job: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",

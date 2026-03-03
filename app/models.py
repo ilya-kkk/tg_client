@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 
 class LoginRequest(BaseModel):
@@ -1392,3 +1392,94 @@ class DeleteChannelPostsResponse(BaseModel):
     channel_id: Optional[int] = None
     deleted_count: int
     message: str
+
+
+class ReactionJobCreate(BaseModel):
+    """Запрос на создание кампании автореакций."""
+    name: str = Field(..., min_length=1, max_length=120)
+    account_sessions: List[str] = Field(..., min_length=1)
+    reactions: List[str] = Field(..., min_length=1, max_length=10)
+    message_frequency: Literal["every", "1/2", "1/3", "2/3"]
+    target_chats: List[str] = Field(..., min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Название кампании не может быть пустым")
+        return value
+
+    @field_validator("account_sessions", "target_chats")
+    @classmethod
+    def validate_non_empty_items(cls, v: List[str]) -> List[str]:
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Список не может быть пустым")
+        return values
+
+    @field_validator("reactions")
+    @classmethod
+    def validate_reactions(cls, v: List[str]) -> List[str]:
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Нужно указать хотя бы одну реакцию")
+        if len(values) > 10:
+            raise ValueError("Можно указать не более 10 реакций")
+        return values
+
+
+class ReactionJobUpdate(BaseModel):
+    """Запрос на обновление кампании автореакций."""
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    account_sessions: Optional[List[str]] = Field(None, min_length=1)
+    reactions: Optional[List[str]] = Field(None, min_length=1, max_length=10)
+    message_frequency: Optional[Literal["every", "1/2", "1/3", "2/3"]] = None
+    target_chats: Optional[List[str]] = Field(None, min_length=1)
+    is_active: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_optional_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            raise ValueError("Название кампании не может быть пустым")
+        return value
+
+    @field_validator("account_sessions", "target_chats")
+    @classmethod
+    def validate_optional_non_empty_items(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Список не может быть пустым")
+        return values
+
+    @field_validator("reactions")
+    @classmethod
+    def validate_optional_reactions(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Нужно указать хотя бы одну реакцию")
+        if len(values) > 10:
+            raise ValueError("Можно указать не более 10 реакций")
+        return values
+
+
+class ReactionJobOut(BaseModel):
+    """Выходная модель кампании автореакций."""
+    id: str
+    user_id: str
+    name: str
+    account_sessions: List[str]
+    reactions: List[str]
+    message_frequency: Literal["every", "1/2", "1/3", "2/3"]
+    target_chats: List[str]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
