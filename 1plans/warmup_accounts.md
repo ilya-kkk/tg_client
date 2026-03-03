@@ -16,7 +16,7 @@
   - `is_active` (bool, NOT NULL, default false)
   - `created_at` (timestamptz, default now())
   - `updated_at` (timestamptz, default now())
-- [ ] **Добавить RLS-политики**: пользователь видит и изменяет только свои строки (`user_id = auth.uid()`).
+- [x] **Добавить RLS-политики**: пользователь видит и изменяет только свои строки (`user_id = auth.uid()`).
 - [ ] **Создать индекс** по `user_id` для быстрой выборки кампаний пользователя.
 
 ### 2. Конфигурация режимов прогрева

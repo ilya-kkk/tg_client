@@ -36,23 +36,23 @@ drop policy if exists warmup_jobs_select_own on public.warmup_jobs;
 create policy warmup_jobs_select_own
 on public.warmup_jobs
 for select
-using (auth.uid() = user_id or auth.role() = 'service_role');
+using (auth.uid() = user_id);
 
 drop policy if exists warmup_jobs_insert_own on public.warmup_jobs;
 create policy warmup_jobs_insert_own
 on public.warmup_jobs
 for insert
-with check (auth.uid() = user_id or auth.role() = 'service_role');
+with check (auth.uid() = user_id);
 
 drop policy if exists warmup_jobs_update_own on public.warmup_jobs;
 create policy warmup_jobs_update_own
 on public.warmup_jobs
 for update
-using (auth.uid() = user_id or auth.role() = 'service_role')
-with check (auth.uid() = user_id or auth.role() = 'service_role');
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
 
 drop policy if exists warmup_jobs_delete_own on public.warmup_jobs;
 create policy warmup_jobs_delete_own
 on public.warmup_jobs
 for delete
-using (auth.uid() = user_id or auth.role() = 'service_role');
+using (auth.uid() = user_id);
