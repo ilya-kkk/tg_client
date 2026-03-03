@@ -110,6 +110,7 @@ from app.models import (
     ReactionJobCreate,
     ReactionJobUpdate,
     ReactionJobOut,
+    WarmupJobCreate,
     WarmupJobOut,
     SessionInfo,
     SessionListResponse,
@@ -125,6 +126,7 @@ from app.supabase_client import (
 from app.telegram_client import MultiSessionManager
 import logging
 from app.config import CORS_ALLOW_ORIGINS
+from app.warmup_config import WARMUP_MODES
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -199,6 +201,15 @@ async def reaction_jobs_worker() -> None:
             logger.error("Ошибка в воркере авто-реакций: %s", e)
 
         await asyncio.sleep(poll_interval_seconds)
+
+
+def get_mode_average_actions_per_day(mode: str) -> int:
+    mode_config = WARMUP_MODES.get(mode)
+    if mode_config is None:
+        raise ValueError(f"Конфигурация режима '{mode}' не найдена")
+
+    min_actions, max_actions = mode_config["actions_per_day_range"]
+    return (min_actions + max_actions) // 2
 
 
 @asynccontextmanager
@@ -1871,6 +1882,38 @@ async def list_warmup_jobs(user_id: str):
         return [WarmupJobOut(**row) for row in rows]
     except Exception as e:
         logger.error("Ошибка при получении warmup_jobs: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/users/{user_id}/warmup-jobs",
+    response_model=WarmupJobOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["users"],
+)
+async def create_warmup_job(user_id: str, request: WarmupJobCreate):
+    if warmup_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище warmup_jobs не инициализировано",
+        )
+    try:
+        payload = request.model_dump()
+        payload["actions_per_day"] = get_mode_average_actions_per_day(request.mode)
+        payload.setdefault("is_active", False)
+        row = warmup_jobs_repo.create(user_id=user_id, payload=payload)
+        return WarmupJobOut(**row)
+    except ValueError as e:
+        logger.error("Ошибка конфигурации warmup mode: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+    except Exception as e:
+        logger.error("Ошибка при создании warmup_job: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",

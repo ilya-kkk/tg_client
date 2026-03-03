@@ -275,3 +275,10 @@ class WarmupJobsRepo:
             .execute()
         )
         return response.data or []
+
+    def create(self, user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = {**payload, "user_id": user_id}
+        response = self.client.table(self.table_name).insert(data).execute()
+        if response.data:
+            return response.data[0]
+        return data
