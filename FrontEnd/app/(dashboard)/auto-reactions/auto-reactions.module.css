@@ -1,0 +1,239 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.7rem;
+}
+
+.subtitle {
+  margin: 0.25rem 0 0;
+  color: #94a3b8;
+}
+
+.userBox {
+  border: 1px solid #1f2937;
+  border-radius: 0.75rem;
+  padding: 0.9rem;
+  background: #0b1223;
+}
+
+.userRow {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.label {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-size: 0.9rem;
+  color: #cbd5e1;
+}
+
+.input,
+.textarea {
+  width: 100%;
+  border: 1px solid #23304b;
+  border-radius: 0.6rem;
+  background: #0f172a;
+  color: #e5e7eb;
+  padding: 0.65rem 0.75rem;
+}
+
+.input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: #22c55e;
+}
+
+.createButton {
+  border: none;
+  border-radius: 0.6rem;
+  padding: 0.65rem 1rem;
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+  color: #052e16;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.secondaryButton {
+  border: 1px solid #334155;
+  border-radius: 0.6rem;
+  padding: 0.65rem 1rem;
+  color: #e2e8f0;
+  background: #111827;
+  cursor: pointer;
+}
+
+.skeletonList {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.skeletonItem {
+  height: 58px;
+  border-radius: 0.7rem;
+  background: linear-gradient(90deg, #0f172a, #131f35, #0f172a);
+  background-size: 200% 100%;
+  animation: pulse 1.2s linear infinite;
+}
+
+@keyframes pulse {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.errorBox,
+.emptyState {
+  border: 1px solid #334155;
+  border-radius: 0.7rem;
+  padding: 0.85rem;
+  background: #0f172a;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid #223149;
+  border-radius: 0.75rem;
+  background: #0b1223;
+  padding: 0.85rem;
+}
+
+.rowName {
+  font-weight: 600;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.iconButton,
+.iconButtonDanger {
+  border: 1px solid #334155;
+  border-radius: 0.55rem;
+  padding: 0.35rem 0.55rem;
+  cursor: pointer;
+  background: #111827;
+}
+
+.iconButtonDanger {
+  border-color: #7f1d1d;
+}
+
+.switchWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  background: #070d1c;
+  border: 1px solid #23304b;
+  border-radius: 0.9rem;
+  padding: 1rem;
+}
+
+.modalTitle {
+  margin: 0 0 0.9rem;
+}
+
+.form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.gridOptions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.5rem;
+}
+
+.checkboxLabel,
+.radioLabel,
+.emojiLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.92rem;
+}
+
+.emojiGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(70px, 1fr));
+  gap: 0.45rem;
+}
+
+.radioGroup {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+@media (max-width: 780px) {
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .userRow {
+    flex-direction: column;
+  }
+
+  .row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.7rem;
+  }
+
+  .actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .emojiGrid {
+    grid-template-columns: repeat(3, minmax(70px, 1fr));
+  }
+}

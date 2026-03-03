@@ -16,6 +16,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           <Link href="/channels-parser" className="nav-link">
             Парсер каналов
           </Link>
+          <Link href="/auto-reactions" className="nav-link">
+            Автореакции
+          </Link>
         </nav>
       </aside>
       <main className="main-content">{children}</main>
