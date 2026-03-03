@@ -50,12 +50,12 @@
   - `DELETE /sessions/{session_id}/channels/parsed` — очищать записи (по сессии или глобально).
 
 ### 4. Frontend: страница парсера каналов
-- [ ] **Создать страницу** `FrontEnd/app/(dashboard)/channels-parser/page.tsx` (или другой роут):
+- [x] **Создать страницу** `FrontEnd/app/(dashboard)/channels-parser/page.tsx` (или другой роут):
   - поле ввода ключевых слов (textarea, по одному слову/фразе на строку);
   - настройки: `limit_per_keyword`, переключатель «тянуть описание»;
   - кнопка «Запустить поиск»;
   - вывод результатов таблицей/карточками: `title`, `@username`, `participants`, `found_by`;
   - состояния: loading / empty / error.
-- [ ] **Реализовать экспорт результатов**:
+- [x] **Реализовать экспорт результатов**:
   - кнопка «Скачать CSV» (колонки: title, username, link, participants, found_by);
   - кнопка «Сохранить в txt только `@username`».
