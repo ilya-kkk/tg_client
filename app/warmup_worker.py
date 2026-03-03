@@ -708,20 +708,32 @@ class WarmupWorker:
             )
             return False
 
+    async def warmup_update_status(self, session_id: str) -> bool:
+        """Переключает статус аккаунта в online, затем обратно в offline."""
+        return await self._run_warmup_update_status(
+            session_id=session_id,
+            job_id="",
+        )
+
     async def _warmup_update_status(self, session_id: str, job: dict) -> None:
+        await self._run_warmup_update_status(
+            session_id=session_id,
+            job_id=self._get_job_id(job),
+        )
+
+    async def _run_warmup_update_status(self, session_id: str, job_id: str) -> bool:
         telethon = self._load_telethon()
         if telethon is None:
-            return
+            return False
 
-        client = await self._get_session_client(session_id, job)
+        client = await self._get_session_client(session_id, {"id": job_id} if job_id else {})
         if client is None:
-            return
+            return False
 
         functions = telethon["functions"]
 
         try:
-            if not client.is_connected():
-                await client.connect()
+            await client.connect()
 
             await client(functions.account.UpdateStatusRequest(offline=False))
             online_duration_sec = random.randint(10, 30)
@@ -730,19 +742,21 @@ class WarmupWorker:
 
             logger.info(
                 "Warmup update_status выполнен: job_id=%s session_id=%s online_seconds=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
                 online_duration_sec,
             )
+            return True
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning(
                 "Ошибка warmup update_status: job_id=%s session_id=%s error=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
                 e,
             )
+            return False
 
     async def _run_job(self, job: dict) -> None:
         """Основной цикл прогрева кампании."""

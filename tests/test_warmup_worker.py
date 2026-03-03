@@ -630,8 +630,10 @@ def test_warmup_update_status_switches_online_and_offline(monkeypatch: pytest.Mo
     class StubManager:
         def __init__(self, client):
             self.client = client
+            self.called_with: str | None = None
 
         async def get_client(self, session_id: str):
+            self.called_with = session_id
             return self.client
 
     class DummyUpdateStatusRequest:
@@ -674,8 +676,10 @@ def test_warmup_update_status_switches_online_and_offline(monkeypatch: pytest.Mo
 
         monkeypatch.setattr(warmup_worker_module.asyncio, "sleep", fake_sleep)
 
-        await worker._warmup_update_status(session_id="session-1", job={"id": "job-1"})
+        updated = await worker.warmup_update_status(session_id="session-1")
 
+        assert updated is True
+        assert manager.called_with == "session-1"
         assert client.connected is True
         assert sleep_calls == [17]
         assert [request.offline for request in client.requests] == [False, True]

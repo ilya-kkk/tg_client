@@ -73,7 +73,7 @@
   - [x] `warmup_join_channel(session_id, channel)` — подписаться через `JoinChannelRequest`; если уже подписан — пропустить
   - [x] `warmup_view_story(session_id)` — вызвать `GetStoriesRequest` для случайного контакта или канала из `target_channels`
   - [x] `warmup_search_global(session_id)` — вызвать `SearchGlobalRequest` со случайным словом из встроенного словаря (~50 нейтральных слов)
-  - [ ] `warmup_update_status(session_id)` — выполнить `connect()` + `UpdateStatusRequest(offline=False)`, затем через 10–30 сек `UpdateStatusRequest(offline=True)`
+  - [x] `warmup_update_status(session_id)` — выполнить `connect()` + `UpdateStatusRequest(offline=False)`, затем через 10–30 сек `UpdateStatusRequest(offline=True)`
 - [ ] **Обработка ошибок и FloodWait**:
   - при `FloodWaitError(seconds=N)` — приостановить воркер для данного `session_id` на `N + 60` секунд, залогировать
   - при `UserBannedInChannelError` / `ChatWriteForbiddenError` — пропустить действие, убрать чат из очереди на текущую итерацию
