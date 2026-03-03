@@ -194,7 +194,6 @@ def test_warmup_read_messages_calls_get_history_and_simulates_read_delay(
             },
         )
         monkeypatch.setattr(warmup_worker_module.random, "choice", lambda values: values[0])
-        monkeypatch.setattr(warmup_worker_module.random, "randint", lambda *_: 3)
         monkeypatch.setattr(warmup_worker_module.random, "uniform", lambda *_: 1.25)
 
         async def fake_sleep(seconds: float) -> None:
@@ -211,8 +210,8 @@ def test_warmup_read_messages_calls_get_history_and_simulates_read_delay(
         assert client.last_entity == "@test_channel"
         assert len(client.requests) == 1
         assert isinstance(client.requests[0], DummyGetHistoryRequest)
-        assert client.requests[0].limit == 3
-        assert sleep_calls == [1.25, 1.25, 1.25]
+        assert client.requests[0].limit == 15
+        assert sleep_calls == [1.25] * 15
 
     asyncio.run(scenario())
 

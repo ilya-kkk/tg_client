@@ -249,11 +249,15 @@ class WarmupWorker:
 
         await handler(session_id, job)
 
-    async def _warmup_read_messages(self, session_id: str, job: dict) -> None:
-        telethon = self._load_telethon()
-        if telethon is None:
-            return
+    async def warmup_read_messages(self, session_id: str, chat: str) -> int:
+        """Открывает диалог и имитирует чтение до 15 последних сообщений."""
+        return await self._run_warmup_read_messages(
+            session_id=session_id,
+            chat=chat,
+            job_id="",
+        )
 
+    async def _warmup_read_messages(self, session_id: str, job: dict) -> None:
         target_chat = self._pick_target_channel(job)
         if not target_chat:
             logger.debug(
@@ -262,16 +266,27 @@ class WarmupWorker:
             )
             return
 
-        client = await self._get_session_client(session_id, job)
+        await self._run_warmup_read_messages(
+            session_id=session_id,
+            chat=target_chat,
+            job_id=self._get_job_id(job),
+        )
+
+    async def _run_warmup_read_messages(self, session_id: str, chat: str, job_id: str) -> int:
+        telethon = self._load_telethon()
+        if telethon is None:
+            return 0
+
+        client = await self._get_session_client(session_id, {"id": job_id} if job_id else {})
         if client is None:
-            return
+            return 0
 
         functions = telethon["functions"]
-        chat_identifier = self._parse_chat_identifier(target_chat)
+        normalized_chat = self._normalize_chat_identifier(chat)
+        chat_identifier = self._parse_chat_identifier(normalized_chat)
 
         try:
             peer = await client.get_input_entity(chat_identifier)
-            history_limit = random.randint(3, 15)
             response = await client(
                 self._build_request(
                     functions.messages.GetHistoryRequest,
@@ -279,7 +294,7 @@ class WarmupWorker:
                     offset_id=0,
                     offset_date=None,
                     add_offset=0,
-                    limit=history_limit,
+                    limit=15,
                     max_id=0,
                     min_id=0,
                     hash=0,
@@ -291,21 +306,23 @@ class WarmupWorker:
 
             logger.info(
                 "Warmup read_messages выполнен: job_id=%s session_id=%s chat=%s read_count=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_chat,
+                normalized_chat,
                 len(messages),
             )
+            return len(messages)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.warning(
                 "Ошибка warmup read_messages: job_id=%s session_id=%s chat=%s error=%s",
-                self._get_job_id(job),
+                job_id,
                 session_id,
-                target_chat,
+                normalized_chat,
                 e,
             )
+            return 0
 
     async def _warmup_react_to_message(self, session_id: str, job: dict) -> None:
         telethon = self._load_telethon()

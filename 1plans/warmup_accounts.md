@@ -68,7 +68,7 @@
 - [ ] **Реализовать методы действий** в `app/telegram_client.py` (или `app/warmup_worker.py`):
 
   #### 4.1 Действия прогрева
-  - [ ] `warmup_read_messages(session_id, chat)` — открыть диалог, вызвать `GetHistoryRequest`, имитировать задержку «чтения» (0.5–2 сек на каждое сообщение, до 15 сообщений)
+  - [x] `warmup_read_messages(session_id, chat)` — открыть диалог, вызвать `GetHistoryRequest`, имитировать задержку «чтения» (0.5–2 сек на каждое сообщение, до 15 сообщений)
   - [ ] `warmup_react_to_message(session_id, chat)` — получить последние сообщения, выбрать случайное, отправить случайную реакцию из набора базовых эмодзи
   - [ ] `warmup_join_channel(session_id, channel)` — подписаться через `JoinChannelRequest`; если уже подписан — пропустить
   - [ ] `warmup_view_story(session_id)` — вызвать `GetStoriesRequest` для случайного контакта или канала из `target_channels`
