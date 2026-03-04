@@ -568,14 +568,23 @@ export default function AutoReactionsPage() {
                 >
                   {deletingJobId === job.id ? "..." : "🗑️"}
                 </button>
-                <label className={styles.switchWrap}>
+                <label className={styles.toggleWrap}>
                   <input
                     type="checkbox"
+                    className={styles.toggleInput}
                     checked={job.is_active}
                     onChange={() => void toggleJobActive(job)}
                     disabled={togglingJobId === job.id}
                   />
-                  <span>{togglingJobId === job.id ? "..." : job.is_active ? "Вкл" : "Выкл"}</span>
+                  <span
+                    className={`${styles.toggleSlider} ${
+                      togglingJobId === job.id ? styles.toggleSliderLoading : ""
+                    }`}
+                    aria-hidden="true"
+                  >
+                    {togglingJobId === job.id && <span className={styles.toggleSpinner} />}
+                  </span>
+                  <span className={styles.toggleLabel}>{job.is_active ? "Вкл" : "Выкл"}</span>
                 </label>
               </div>
             </article>

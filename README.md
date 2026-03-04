@@ -30,6 +30,19 @@ SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_KEY=<service_role_or_anon_key>
 ```
 
+## Supabase schema
+
+Перед запуском API примените SQL-скрипты из `scripts/supabase` по порядку:
+
+1. `001_create_telegram_sessions.sql`
+2. `002_create_parsed_channels.sql`
+3. `003_create_reaction_jobs.sql`
+4. `004_create_warmup_jobs.sql`
+5. `005_add_warmup_jobs_user_id_index.sql`
+6. `006_fix_warmup_jobs_user_fk.sql`
+
+Если уже получили ошибку `PGRST205` для `public.warmup_jobs`, выполните минимум `004_create_warmup_jobs.sql` и `006_fix_warmup_jobs_user_fk.sql` в SQL Editor Supabase.
+
 ## Запуск
 
 ```bash

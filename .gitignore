@@ -42,3 +42,5 @@ sessions/
 # OS
 .DS_Store
 Thumbs.db
+.codex/
+*.txt
