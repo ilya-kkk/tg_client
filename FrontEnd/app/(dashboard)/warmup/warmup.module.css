@@ -138,6 +138,7 @@
   border: 1px solid #223149;
   border-radius: 0.8rem;
   background: #0b1223;
+  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.35);
   padding: 0.8rem;
 }
 
