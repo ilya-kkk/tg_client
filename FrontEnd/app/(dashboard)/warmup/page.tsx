@@ -234,6 +234,7 @@ export default function WarmupPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [loadingSessions, setLoadingSessions] = useState<boolean>(false);
+  const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [togglingJobIds, setTogglingJobIds] = useState<Set<string>>(() => new Set());
 
   const [error, setError] = useState<string | null>(null);
@@ -428,6 +429,36 @@ export default function WarmupPage() {
     });
   }, []);
 
+  const removeJob = useCallback(async (job: WarmupJob) => {
+    if (!userId) {
+      setError("Пользователь не определен. Войдите заново.");
+      return;
+    }
+
+    const confirmed = window.confirm(`Удалить кампанию «${job.name}»?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingJobId(job.id);
+    setError(null);
+
+    try {
+      await fetchJson<{ success: boolean }>(`${API_BASE}/users/${userId}/warmup-jobs/${job.id}`, {
+        method: "DELETE"
+      });
+      setJobs((prev) => prev.filter((item) => item.id !== job.id));
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setError(e.message);
+      } else {
+        setError("Не удалось удалить кампанию прогрева");
+      }
+    } finally {
+      setDeletingJobId(null);
+    }
+  }, [userId]);
+
   const submitModal = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -543,6 +574,7 @@ export default function WarmupPage() {
         <div className={styles.cardsList}>
           {sortedJobs.map((job) => {
             const isToggling = togglingJobIds.has(job.id);
+            const isDeleting = deletingJobId === job.id;
 
             return (
               <article key={job.id} className={styles.card}>
@@ -561,6 +593,7 @@ export default function WarmupPage() {
                     className={styles.iconButton}
                     aria-label="Редактировать кампанию"
                     onClick={() => openEditModal(job)}
+                    disabled={isDeleting}
                   >
                     ✏️
                   </button>
@@ -569,8 +602,10 @@ export default function WarmupPage() {
                     type="button"
                     className={styles.iconButtonDanger}
                     aria-label="Удалить кампанию"
+                    onClick={() => void removeJob(job)}
+                    disabled={isDeleting}
                   >
-                    🗑️
+                    {isDeleting ? "..." : "🗑️"}
                   </button>
 
                   <label className={styles.toggleWrap}>
@@ -579,7 +614,7 @@ export default function WarmupPage() {
                       className={styles.toggleInput}
                       checked={job.is_active}
                       onChange={() => void toggleJobActive(job)}
-                      disabled={isToggling}
+                      disabled={isToggling || isDeleting}
                     />
                     <span
                       className={`${styles.toggleSlider} ${isToggling ? styles.toggleSliderLoading : ""}`}
