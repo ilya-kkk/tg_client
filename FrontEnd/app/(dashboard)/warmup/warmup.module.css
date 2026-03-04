@@ -158,25 +158,41 @@
 }
 
 .modeBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
   border-radius: 999px;
-  padding: 0.2rem 0.55rem;
-  font-size: 0.75rem;
+  border: 1px solid transparent;
+  padding: 0.16rem 0.52rem;
+  font-size: 0.72rem;
+  line-height: 1;
   font-weight: 600;
 }
 
+.modeBadge::before {
+  content: "";
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 .modeCautious {
-  color: #dcfce7;
-  background: #166534;
+  color: #22c55e;
+  background: #052e16;
+  border-color: #166534;
 }
 
 .modeNormal {
-  color: #fef3c7;
-  background: #92400e;
+  color: #f59e0b;
+  background: #451a03;
+  border-color: #b45309;
 }
 
 .modeAggressive {
-  color: #fee2e2;
-  background: #991b1b;
+  color: #ef4444;
+  background: #450a0a;
+  border-color: #b91c1c;
 }
 
 .rightBlock {
