@@ -22,6 +22,12 @@ interface WarmupJob {
   updated_at: string;
 }
 
+interface WarmupJobsResponse extends Array<WarmupJob> {}
+
+interface WarmupJobDeleteResponse {
+  success: boolean;
+}
+
 interface WarmupJobPayload {
   name: string;
   account_sessions: string[];
@@ -51,6 +57,11 @@ interface AccountInfo {
 interface AccountInfoResponse {
   success: boolean;
   account: AccountInfo;
+}
+
+interface ApiErrorResponse {
+  detail?: string;
+  message?: string;
 }
 
 interface SessionOption {
@@ -217,7 +228,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const errorBody = await response.json().catch(() => null);
+    const errorBody = (await response.json().catch(() => null)) as ApiErrorResponse | null;
     const message =
       errorBody?.detail ?? errorBody?.message ?? `Ошибка запроса (${response.status})`;
     throw new Error(message);
@@ -250,7 +261,9 @@ export default function WarmupPage() {
     setError(null);
 
     try {
-      const response = await fetchJson<WarmupJob[]>(`${API_BASE}/users/${targetUserId}/warmup-jobs`);
+      const response = await fetchJson<WarmupJobsResponse>(
+        `${API_BASE}/users/${targetUserId}/warmup-jobs`
+      );
       setJobs(response);
     } catch (e: unknown) {
       if (e instanceof Error) {
@@ -444,9 +457,12 @@ export default function WarmupPage() {
     setError(null);
 
     try {
-      await fetchJson<{ success: boolean }>(`${API_BASE}/users/${userId}/warmup-jobs/${job.id}`, {
-        method: "DELETE"
-      });
+      await fetchJson<WarmupJobDeleteResponse>(
+        `${API_BASE}/users/${userId}/warmup-jobs/${job.id}`,
+        {
+          method: "DELETE"
+        }
+      );
       setJobs((prev) => prev.filter((item) => item.id !== job.id));
     } catch (e: unknown) {
       if (e instanceof Error) {
