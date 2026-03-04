@@ -231,6 +231,7 @@ export default function WarmupPage() {
 
   const [error, setError] = useState<string | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
 
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingJob, setEditingJob] = useState<WarmupJob | null>(null);
@@ -324,12 +325,14 @@ export default function WarmupPage() {
   const openCreateModal = useCallback(() => {
     setEditingJob(null);
     setForm(createInitialForm());
+    setModalError(null);
     setIsModalOpen(true);
   }, []);
 
   const openEditModal = useCallback((job: WarmupJob) => {
     setEditingJob(job);
     setForm(toForm(job));
+    setModalError(null);
     setIsModalOpen(true);
   }, []);
 
@@ -340,6 +343,7 @@ export default function WarmupPage() {
     setIsModalOpen(false);
     setEditingJob(null);
     setForm(createInitialForm());
+    setModalError(null);
   }, [saving]);
 
   const toggleLocalActive = useCallback((jobId: string) => {
@@ -377,7 +381,7 @@ export default function WarmupPage() {
     event.preventDefault();
 
     if (!userId) {
-      setError("Пользователь не определен. Войдите заново.");
+      setModalError("Пользователь не определен. Войдите заново.");
       return;
     }
 
@@ -385,24 +389,24 @@ export default function WarmupPage() {
     const targetChannels = parseTargetChannels(form.target_channels_input);
 
     if (!trimmedName) {
-      setError("Введите название кампании");
+      setModalError("Введите название кампании");
       return;
     }
     if (form.account_sessions.length === 0) {
-      setError("Выберите хотя бы один аккаунт");
+      setModalError("Выберите хотя бы один аккаунт");
       return;
     }
     if (form.enabled_actions.length === 0) {
-      setError("Выберите хотя бы одно действие прогрева");
+      setModalError("Выберите хотя бы одно действие прогрева");
       return;
     }
     if (targetChannels.length === 0) {
-      setError("Добавьте хотя бы один канал или чат для прогрева");
+      setModalError("Добавьте хотя бы один канал или чат для прогрева");
       return;
     }
 
     setSaving(true);
-    setError(null);
+    setModalError(null);
 
     const payload: WarmupJobPayload = {
       name: trimmedName,
@@ -433,11 +437,12 @@ export default function WarmupPage() {
       setIsModalOpen(false);
       setEditingJob(null);
       setForm(createInitialForm());
+      setModalError(null);
     } catch (e: unknown) {
       if (e instanceof Error) {
-        setError(e.message);
+        setModalError(e.message);
       } else {
-        setError("Не удалось сохранить кампанию");
+        setModalError("Не удалось сохранить кампанию");
       }
     } finally {
       setSaving(false);
@@ -536,6 +541,7 @@ export default function WarmupPage() {
             <h2 className={styles.modalTitle}>
               {editingJob ? "Редактирование кампании" : "Создание кампании"}
             </h2>
+            {modalError && <p className={styles.modalError}>{modalError}</p>}
 
             <form className={styles.form} onSubmit={submitModal}>
               <div>

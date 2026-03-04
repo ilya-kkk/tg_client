@@ -278,6 +278,15 @@
   margin: 0 0 0.9rem;
 }
 
+.modalError {
+  margin: 0 0 0.9rem;
+  border: 1px solid #7f1d1d;
+  border-radius: 0.6rem;
+  background: #2b1216;
+  color: #fecaca;
+  padding: 0.65rem 0.75rem;
+}
+
 .form {
   display: grid;
   gap: 0.95rem;
