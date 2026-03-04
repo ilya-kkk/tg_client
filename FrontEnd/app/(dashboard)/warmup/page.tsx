@@ -742,6 +742,7 @@ export default function WarmupPage() {
                       >
                         <input
                           type="checkbox"
+                          className={styles.accountCheckbox}
                           checked={form.account_sessions.includes(session.session_id)}
                           onChange={() => toggleAccountSession(session.session_id)}
                         />
