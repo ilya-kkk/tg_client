@@ -40,6 +40,8 @@ SUPABASE_KEY=<service_role_or_anon_key>
 4. `004_create_warmup_jobs.sql`
 5. `005_add_warmup_jobs_user_id_index.sql`
 6. `006_fix_warmup_jobs_user_fk.sql`
+7. `007_create_ai_comment_jobs.sql`
+8. `008_create_ai_comment_job_posts.sql`
 
 Если уже получили ошибку `PGRST205` для `public.warmup_jobs`, выполните минимум `004_create_warmup_jobs.sql` и `006_fix_warmup_jobs_user_fk.sql` в SQL Editor Supabase.
 
