@@ -4,7 +4,7 @@
 
 ### 1. Модель данных (таблица `ai_comment_jobs`)
 
-- [ ] **Создать таблицу `ai_comment_jobs` в Supabase** со следующими полями:
+- [x] **Создать таблицу `ai_comment_jobs` в Supabase** со следующими полями:
   - `id` (uuid, PK, default gen_random_uuid())
   - `user_id` (uuid, FK → users.id, NOT NULL)
   - `name` (text, NOT NULL) — название кампании
