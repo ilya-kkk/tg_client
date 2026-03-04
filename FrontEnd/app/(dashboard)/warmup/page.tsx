@@ -83,6 +83,7 @@ interface FormState {
 interface WarmupModeOption {
   value: WarmupMode;
   label: string;
+  icon: string;
   description: string;
   colorClass: string;
 }
@@ -110,18 +111,21 @@ const MODE_OPTIONS: WarmupModeOption[] = [
   {
     value: "cautious",
     label: "Осторожный",
+    icon: "🛡️",
     description: "5–15 действий/день, длинные паузы",
     colorClass: "modeCardCautious"
   },
   {
     value: "normal",
     label: "Нормальный",
+    icon: "⚖️",
     description: "20–50 действий/день, умеренные паузы",
     colorClass: "modeCardNormal"
   },
   {
     value: "aggressive",
     label: "Агрессивный",
+    icon: "🔥",
     description: "60–120 действий/день, короткие паузы",
     colorClass: "modeCardAggressive"
   }
@@ -686,7 +690,12 @@ export default function WarmupPage() {
                         checked={form.mode === mode.value}
                         onChange={() => setForm((prev) => ({ ...prev, mode: mode.value }))}
                       />
-                      <span className={styles.modeCardTitle}>{mode.label}</span>
+                      <span className={styles.modeCardHeader}>
+                        <span className={styles.modeCardIcon} aria-hidden="true">
+                          {mode.icon}
+                        </span>
+                        <span className={styles.modeCardTitle}>{mode.label}</span>
+                      </span>
                       <span className={styles.modeCardDescription}>{mode.description}</span>
                     </label>
                   ))}
