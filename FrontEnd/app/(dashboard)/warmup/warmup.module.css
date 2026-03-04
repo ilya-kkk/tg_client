@@ -228,6 +228,10 @@
   transition: background-color 0.2s ease;
 }
 
+.toggleSliderLoading::after {
+  opacity: 0;
+}
+
 .toggleSlider::after {
   content: "";
   position: absolute;
@@ -246,6 +250,26 @@
 
 .toggleInput:checked + .toggleSlider::after {
   transform: translateX(16px);
+}
+
+.toggleSpinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  margin-left: -6px;
+  border: 2px solid rgba(248, 250, 252, 0.3);
+  border-top-color: #f8fafc;
+  border-radius: 50%;
+  animation: toggleSpin 0.7s linear infinite;
+}
+
+@keyframes toggleSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .toggleLabel {

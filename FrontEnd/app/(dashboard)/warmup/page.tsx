@@ -234,6 +234,7 @@ export default function WarmupPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [loadingSessions, setLoadingSessions] = useState<boolean>(false);
+  const [togglingJobId, setTogglingJobId] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
@@ -362,11 +363,37 @@ export default function WarmupPage() {
     setModalError(null);
   }, [saving]);
 
-  const toggleLocalActive = useCallback((jobId: string) => {
-    setJobs((prev) =>
-      prev.map((job) => (job.id === jobId ? { ...job, is_active: !job.is_active } : job))
-    );
-  }, []);
+  const toggleJobActive = useCallback(async (job: WarmupJob) => {
+    if (!userId) {
+      setError("Пользователь не определен. Войдите заново.");
+      return;
+    }
+
+    const nextValue = !job.is_active;
+    setTogglingJobId(job.id);
+    setError(null);
+    setJobs((prev) => prev.map((item) => (item.id === job.id ? { ...item, is_active: nextValue } : item)));
+
+    try {
+      const updated = await fetchJson<WarmupJob>(
+        `${API_BASE}/users/${userId}/warmup-jobs/${job.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ is_active: nextValue })
+        }
+      );
+      setJobs((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+    } catch (e: unknown) {
+      setJobs((prev) => prev.map((item) => (item.id === job.id ? { ...item, is_active: job.is_active } : item)));
+      if (e instanceof Error) {
+        setError(e.message);
+      } else {
+        setError("Не удалось изменить статус кампании прогрева");
+      }
+    } finally {
+      setTogglingJobId((current) => (current === job.id ? null : current));
+    }
+  }, [userId]);
 
   const toggleAccountSession = useCallback((sessionId: string) => {
     setForm((prev) => {
@@ -506,48 +533,58 @@ export default function WarmupPage() {
 
       {!loading && !error && sortedJobs.length > 0 && (
         <div className={styles.cardsList}>
-          {sortedJobs.map((job) => (
-            <article key={job.id} className={styles.card}>
-              <div className={styles.leftBlock}>
-                <h2 className={styles.cardTitle}>{job.name}</h2>
-                <span className={`${styles.modeBadge} ${styles[MODE_BADGE_CLASSES[job.mode]]}`}>
-                  {MODE_LABELS[job.mode]}
-                </span>
-              </div>
+          {sortedJobs.map((job) => {
+            const isToggling = togglingJobId === job.id;
 
-              <div className={styles.rightBlock}>
-                <span className={styles.accountCounter}>{job.account_sessions.length} аккаунтов</span>
+            return (
+              <article key={job.id} className={styles.card}>
+                <div className={styles.leftBlock}>
+                  <h2 className={styles.cardTitle}>{job.name}</h2>
+                  <span className={`${styles.modeBadge} ${styles[MODE_BADGE_CLASSES[job.mode]]}`}>
+                    {MODE_LABELS[job.mode]}
+                  </span>
+                </div>
 
-                <button
-                  type="button"
-                  className={styles.iconButton}
-                  aria-label="Редактировать кампанию"
-                  onClick={() => openEditModal(job)}
-                >
-                  ✏️
-                </button>
+                <div className={styles.rightBlock}>
+                  <span className={styles.accountCounter}>{job.account_sessions.length} аккаунтов</span>
 
-                <button
-                  type="button"
-                  className={styles.iconButtonDanger}
-                  aria-label="Удалить кампанию"
-                >
-                  🗑️
-                </button>
+                  <button
+                    type="button"
+                    className={styles.iconButton}
+                    aria-label="Редактировать кампанию"
+                    onClick={() => openEditModal(job)}
+                  >
+                    ✏️
+                  </button>
 
-                <label className={styles.toggleWrap}>
-                  <input
-                    type="checkbox"
-                    className={styles.toggleInput}
-                    checked={job.is_active}
-                    onChange={() => toggleLocalActive(job.id)}
-                  />
-                  <span className={styles.toggleSlider} aria-hidden="true" />
-                  <span className={styles.toggleLabel}>{job.is_active ? "Вкл" : "Выкл"}</span>
-                </label>
-              </div>
-            </article>
-          ))}
+                  <button
+                    type="button"
+                    className={styles.iconButtonDanger}
+                    aria-label="Удалить кампанию"
+                  >
+                    🗑️
+                  </button>
+
+                  <label className={styles.toggleWrap}>
+                    <input
+                      type="checkbox"
+                      className={styles.toggleInput}
+                      checked={job.is_active}
+                      onChange={() => void toggleJobActive(job)}
+                      disabled={isToggling}
+                    />
+                    <span
+                      className={`${styles.toggleSlider} ${isToggling ? styles.toggleSliderLoading : ""}`}
+                      aria-hidden="true"
+                    >
+                      {isToggling && <span className={styles.toggleSpinner} />}
+                    </span>
+                    <span className={styles.toggleLabel}>{job.is_active ? "Вкл" : "Выкл"}</span>
+                  </label>
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
 
