@@ -234,7 +234,7 @@ export default function WarmupPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [loadingSessions, setLoadingSessions] = useState<boolean>(false);
-  const [togglingJobId, setTogglingJobId] = useState<string | null>(null);
+  const [togglingJobIds, setTogglingJobIds] = useState<Set<string>>(() => new Set());
 
   const [error, setError] = useState<string | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
@@ -370,7 +370,11 @@ export default function WarmupPage() {
     }
 
     const nextValue = !job.is_active;
-    setTogglingJobId(job.id);
+    setTogglingJobIds((prev) => {
+      const next = new Set(prev);
+      next.add(job.id);
+      return next;
+    });
     setError(null);
     setJobs((prev) => prev.map((item) => (item.id === job.id ? { ...item, is_active: nextValue } : item)));
 
@@ -391,7 +395,11 @@ export default function WarmupPage() {
         setError("Не удалось изменить статус кампании прогрева");
       }
     } finally {
-      setTogglingJobId((current) => (current === job.id ? null : current));
+      setTogglingJobIds((prev) => {
+        const next = new Set(prev);
+        next.delete(job.id);
+        return next;
+      });
     }
   }, [userId]);
 
@@ -534,7 +542,7 @@ export default function WarmupPage() {
       {!loading && !error && sortedJobs.length > 0 && (
         <div className={styles.cardsList}>
           {sortedJobs.map((job) => {
-            const isToggling = togglingJobId === job.id;
+            const isToggling = togglingJobIds.has(job.id);
 
             return (
               <article key={job.id} className={styles.card}>
