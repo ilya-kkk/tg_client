@@ -136,37 +136,37 @@ const ACTION_OPTIONS: ActionOption[] = [
     value: "read_messages",
     icon: "📖",
     title: "Чтение сообщений",
-    description: "Открыть чат и прочитать несколько последних сообщений"
+    description: "Читает последние сообщения в чате"
   },
   {
     value: "react_to_message",
     icon: "💬",
     title: "Реакция на сообщение",
-    description: "Поставить случайную реакцию на сообщение в канале"
+    description: "Ставит одну нейтральную реакцию"
   },
   {
     value: "join_channel",
     icon: "➕",
     title: "Подписка на канал",
-    description: "Подписаться на случайный канал из списка прогрева"
+    description: "Подписывается на канал из списка"
   },
   {
     value: "view_story",
     icon: "👀",
     title: "Просмотр историй",
-    description: "Открыть истории случайного контакта или канала"
+    description: "Открывает несколько историй"
   },
   {
     value: "search_global",
     icon: "🔎",
     title: "Глобальный поиск",
-    description: "Выполнить поиск по случайному нейтральному слову"
+    description: "Делает случайный поисковый запрос"
   },
   {
     value: "update_status",
     icon: "🟢",
     title: "Обновление статуса",
-    description: "Кратко переключить статус аккаунта в онлайн"
+    description: "Коротко включает статус «в сети»"
   }
 ];
 
@@ -765,18 +765,19 @@ export default function WarmupPage() {
                         form.enabled_actions.includes(action.value) ? styles.actionOptionActive : ""
                       }`}
                     >
-                      <input
-                        type="checkbox"
-                        checked={form.enabled_actions.includes(action.value)}
-                        onChange={() => toggleAction(action.value)}
-                      />
-                      <span className={styles.actionIcon} aria-hidden="true">
-                        {action.icon}
+                      <span className={styles.actionIconWrap} aria-hidden="true">
+                        <span className={styles.actionIcon}>{action.icon}</span>
                       </span>
                       <span className={styles.actionText}>
                         <span className={styles.actionTitle}>{action.title}</span>
                         <span className={styles.actionDescription}>{action.description}</span>
                       </span>
+                      <input
+                        type="checkbox"
+                        className={styles.actionCheckbox}
+                        checked={form.enabled_actions.includes(action.value)}
+                        onChange={() => toggleAction(action.value)}
+                      />
                     </label>
                   ))}
                 </div>
