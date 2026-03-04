@@ -357,6 +357,12 @@
   display: flex;
   gap: 0.55rem;
   align-items: flex-start;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.accountOptionActive {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.35);
 }
 
 .accountInfo {
@@ -388,6 +394,12 @@
   display: flex;
   gap: 0.5rem;
   align-items: flex-start;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.actionOptionActive {
+  border-color: #16a34a;
+  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.3);
 }
 
 .actionIcon {
@@ -408,6 +420,28 @@
 .actionDescription {
   font-size: 0.78rem;
   color: #94a3b8;
+}
+
+.missingAccountsList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.4rem;
+}
+
+.missingAccountChip {
+  border: 1px solid #7f1d1d;
+  border-radius: 999px;
+  background: #2b1216;
+  color: #fecaca;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  padding: 0.28rem 0.55rem;
+  cursor: pointer;
+}
+
+.missingAccountChip:hover {
+  background: #3b171d;
 }
 
 .modalActions {

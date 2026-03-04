@@ -33,6 +33,7 @@ interface WarmupJobPayload {
 interface SessionInfo {
   session_id: string;
   phone: string | null;
+  first_name?: string | null;
   is_authorized: boolean;
 }
 
@@ -54,6 +55,8 @@ interface AccountInfoResponse {
 
 interface SessionOption {
   session_id: string;
+  first_name: string;
+  phone: string;
   label: string;
   description: string;
 }
@@ -176,7 +179,7 @@ function toForm(job: WarmupJob): FormState {
 
 function parseTargetChannels(rawValue: string): string[] {
   const unique = new Set<string>();
-  for (const line of rawValue.split("\n")) {
+  for (const line of rawValue.split(/\r?\n/)) {
     const value = line.trim();
     if (!value) {
       continue;
@@ -187,14 +190,17 @@ function parseTargetChannels(rawValue: string): string[] {
 }
 
 function buildSessionOption(session: SessionInfo, account: AccountInfo | null): SessionOption {
-  const firstName = account?.first_name?.trim() ?? "";
-  const phone = account?.phone?.trim() || session.phone?.trim() || "";
+  const firstName = (account?.first_name ?? session.first_name ?? "").trim();
+  const phone = (account?.phone ?? session.phone ?? "").trim();
 
   const label = firstName || phone || session.session_id;
-  const description = phone ? `${session.session_id} · ${phone}` : session.session_id;
+  const descriptionParts = [firstName, phone].filter(Boolean);
+  const description = descriptionParts.length > 0 ? descriptionParts.join(" · ") : session.session_id;
 
   return {
     session_id: session.session_id,
+    first_name: firstName,
+    phone,
     label,
     description
   };
@@ -321,20 +327,30 @@ export default function WarmupPage() {
   }, [loadJobs, userId]);
 
   const sortedJobs = useMemo(() => [...jobs].sort((a, b) => a.name.localeCompare(b.name)), [jobs]);
+  const availableSessionIds = useMemo(() => new Set(sessions.map((session) => session.session_id)), [sessions]);
+  const missingSelectedSessionIds = useMemo(
+    () =>
+      form.account_sessions.filter((sessionId) => !availableSessionIds.has(sessionId)).sort((a, b) =>
+        a.localeCompare(b)
+      ),
+    [availableSessionIds, form.account_sessions]
+  );
 
   const openCreateModal = useCallback(() => {
     setEditingJob(null);
     setForm(createInitialForm());
     setModalError(null);
+    void loadSessions();
     setIsModalOpen(true);
-  }, []);
+  }, [loadSessions]);
 
   const openEditModal = useCallback((job: WarmupJob) => {
     setEditingJob(job);
     setForm(toForm(job));
     setModalError(null);
+    void loadSessions();
     setIsModalOpen(true);
-  }, []);
+  }, [loadSessions]);
 
   const closeModal = useCallback(() => {
     if (saving) {
@@ -583,15 +599,42 @@ export default function WarmupPage() {
 
               <div>
                 <p className={styles.label}>Аккаунты</p>
+                <p className={styles.helperText}>Выбрано: {form.account_sessions.length}</p>
                 {loadingSessions && <p className={styles.helperText}>Загрузка активных сессий...</p>}
                 {!loadingSessions && sessionsError && <p className={styles.helperText}>{sessionsError}</p>}
+                {!loadingSessions && missingSelectedSessionIds.length > 0 && (
+                  <>
+                    <p className={styles.helperText}>
+                      Часть выбранных сессий сейчас недоступна в списке активных:
+                    </p>
+                    <div className={styles.missingAccountsList}>
+                      {missingSelectedSessionIds.map((sessionId) => (
+                        <button
+                          key={sessionId}
+                          type="button"
+                          className={styles.missingAccountChip}
+                          onClick={() => toggleAccountSession(sessionId)}
+                        >
+                          {sessionId} · убрать
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
                 {!loadingSessions && sessions.length === 0 && (
                   <p className={styles.helperText}>Нет доступных активных сессий.</p>
                 )}
                 {!loadingSessions && sessions.length > 0 && (
                   <div className={styles.accountsGrid}>
                     {sessions.map((session) => (
-                      <label key={session.session_id} className={styles.accountOption}>
+                      <label
+                        key={session.session_id}
+                        className={`${styles.accountOption} ${
+                          form.account_sessions.includes(session.session_id)
+                            ? styles.accountOptionActive
+                            : ""
+                        }`}
+                      >
                         <input
                           type="checkbox"
                           checked={form.account_sessions.includes(session.session_id)}
@@ -611,7 +654,12 @@ export default function WarmupPage() {
                 <p className={styles.label}>Действия прогрева</p>
                 <div className={styles.actionsGrid}>
                   {ACTION_OPTIONS.map((action) => (
-                    <label key={action.value} className={styles.actionOption}>
+                    <label
+                      key={action.value}
+                      className={`${styles.actionOption} ${
+                        form.enabled_actions.includes(action.value) ? styles.actionOptionActive : ""
+                      }`}
+                    >
                       <input
                         type="checkbox"
                         checked={form.enabled_actions.includes(action.value)}
