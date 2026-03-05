@@ -4,7 +4,7 @@
 
 ### 1. Модель данных (таблица `ai_comment_jobs`)
 
-- [x] **Создать таблицу `ai_comment_jobs` в Supabase** со следующими полями:
+- [ ] **Создать таблицу `ai_comment_jobs` в Supabase** со следующими полями:
   - `id` (uuid, PK, default gen_random_uuid())
   - `user_id` (uuid, FK → users.id, NOT NULL)
   - `name` (text, NOT NULL) — название кампании
@@ -16,7 +16,7 @@
   - `last_checked_at` (timestamptz, NULL) — отметка последней проверки новых постов
   - `created_at` (timestamptz, default now())
   - `updated_at` (timestamptz, default now())
-- [x] **Создать таблицу `ai_comment_job_posts` в Supabase** для идемпотентности (чтобы не комментировать один пост дважды):
+- [ ] **Создать таблицу `ai_comment_job_posts` в Supabase** для идемпотентности (чтобы не комментировать один пост дважды):
   - `id` (uuid, PK, default gen_random_uuid())
   - `job_id` (uuid, FK → ai_comment_jobs.id, NOT NULL)
   - `channel_id` (text, NOT NULL)
@@ -26,8 +26,8 @@
   - `error` (text, NULL)
   - `created_at` (timestamptz, default now())
   - уникальный индекс: (`job_id`, `channel_id`, `message_id`)
-- [x] **Добавить RLS-политики** на обе таблицы: пользователь видит и изменяет только свои строки (`user_id = auth.uid()` или через переданный `user_id`), доступ к `ai_comment_job_posts` только через связанные `job_id` пользователя.
-- [x] **Создать индексы**:
+- [ ] **Добавить RLS-политики** на обе таблицы: пользователь видит и изменяет только свои строки (`user_id = auth.uid()` или через переданный `user_id`), доступ к `ai_comment_job_posts` только через связанные `job_id` пользователя.
+- [ ] **Создать индексы**:
   - по `user_id` в `ai_comment_jobs` для быстрой выборки кампаний;
   - по `job_id` и `created_at` в `ai_comment_job_posts` для быстрого просмотра истории.
 

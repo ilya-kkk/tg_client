@@ -44,3 +44,6 @@ sessions/
 Thumbs.db
 .codex/
 *.txt
+.codex_workflow_runs
+.codex_workflow
+2logs/
