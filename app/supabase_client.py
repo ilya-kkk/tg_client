@@ -346,6 +346,26 @@ class AiCommentJobsRepo:
         )
         return response.data or []
 
+    def get_history_record(
+        self,
+        *,
+        job_id: str,
+        channel_id: str,
+        message_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        response = (
+            self.client.table("ai_comment_job_posts")
+            .select("job_id,channel_id,message_id,status,error,comment_message_id,created_at")
+            .eq("job_id", job_id)
+            .eq("channel_id", channel_id)
+            .eq("message_id", int(message_id))
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return response.data[0]
+
     def upsert_history_record(
         self,
         *,

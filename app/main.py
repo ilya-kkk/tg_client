@@ -230,7 +230,7 @@ async def ai_comment_jobs_worker() -> None:
             active_jobs = ai_comment_jobs_repo.list_active()
             for job in active_jobs:
                 try:
-                    await client_manager.poll_ai_comment_job_channels(
+                    await client_manager.process_ai_comment_jobs(
                         job,
                         ai_comment_jobs_repo=ai_comment_jobs_repo,
                     )

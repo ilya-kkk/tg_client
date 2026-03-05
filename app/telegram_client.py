@@ -66,6 +66,7 @@ class MultiSessionManager:
         self._reaction_job_signatures: Dict[str, str] = {}
         self._reaction_counters: Dict[str, int] = {}
         self._reaction_last_seen_ids: Dict[str, int] = {}
+        self._ai_comment_job_round_robin_indexes: Dict[str, int] = {}
 
     def _get_session_repo(self) -> SessionRepo:
         if self.session_repo is None:
@@ -3240,6 +3241,7 @@ class MultiSessionManager:
         self._clients.clear()
         self._auth_clients.clear()
         self._authorized_sessions.clear()
+        self._ai_comment_job_round_robin_indexes.clear()
     
     def is_connected(self, session_id: Optional[str] = None) -> bool:
         """Проверяет, авторизована ли сессия."""
@@ -3305,68 +3307,45 @@ class MultiSessionManager:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed
 
-    async def _resolve_ai_comment_channel(
-        self,
-        *,
-        job_id: str,
-        session_ids: List[str],
-        channel_identifier: str,
-    ) -> tuple[Optional[TelegramClient], Any, Optional[str], Optional[Union[str, int]]]:
-        parsed_channel_identifier = self._parse_chat_identifier(channel_identifier)
-        if isinstance(parsed_channel_identifier, str) and not parsed_channel_identifier.strip():
-            return None, None, None, None
+    @staticmethod
+    def _extract_ai_comment_post_text(message: Any) -> str:
+        for attr_name in ("raw_text", "message", "text"):
+            value = getattr(message, attr_name, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
 
-        for session_id in session_ids:
-            try:
-                client = await self.get_client(session_id)
-            except Exception as e:
-                logger.warning(
-                    "Пропуск session при мониторинге нейрокомментариев: job_id=%s session_id=%s error=%s",
-                    job_id,
-                    session_id,
-                    e,
-                )
-                continue
+    @staticmethod
+    def _normalize_ai_comment_text(text: str, limit: int = 1000) -> str:
+        normalized_lines = [line.strip() for line in str(text or "").splitlines()]
+        normalized = "\n".join(line for line in normalized_lines if line).strip()
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[:limit].rstrip()
 
-            try:
-                entity = await client.get_entity(parsed_channel_identifier)
-                return client, entity, session_id, parsed_channel_identifier
-            except FloodWaitError as e:
-                logger.warning(
-                    "FloodWait при получении entity канала: job_id=%s session_id=%s channel=%s wait=%s",
-                    job_id,
-                    session_id,
-                    parsed_channel_identifier,
-                    e.seconds,
-                )
-            except (ValueError, RPCError) as e:
-                logger.warning(
-                    "Не удалось получить entity канала: job_id=%s session_id=%s channel=%s error=%s",
-                    job_id,
-                    session_id,
-                    parsed_channel_identifier,
-                    e,
-                )
-            except Exception as e:
-                logger.warning(
-                    "Неожиданная ошибка получения entity канала: job_id=%s session_id=%s channel=%s error=%s",
-                    job_id,
-                    session_id,
-                    parsed_channel_identifier,
-                    e,
-                )
+    def _get_ai_comment_session_order(self, job_id: str, session_ids: List[str]) -> List[str]:
+        normalized_session_ids = [session_id for session_id in session_ids if session_id]
+        if not job_id or not normalized_session_ids:
+            return normalized_session_ids
 
-        return None, None, None, parsed_channel_identifier
+        start_index = self._ai_comment_job_round_robin_indexes.get(job_id, 0) % len(normalized_session_ids)
+        ordered_sessions = normalized_session_ids[start_index:] + normalized_session_ids[:start_index]
+        self._ai_comment_job_round_robin_indexes[job_id] = (start_index + 1) % len(normalized_session_ids)
+        return ordered_sessions
 
-    async def poll_ai_comment_job_channels(
+    async def _collect_ai_comment_job_fresh_posts(
         self,
         job: Dict[str, Any],
-        *,
-        ai_comment_jobs_repo: Optional[AiCommentJobsRepo] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         job_id = str(job.get("id") or "").strip()
         if not job_id or not bool(job.get("is_active")):
-            return []
+            return {
+                "fresh_posts": [],
+                "successful_channels": 0,
+                "failed_channels": [],
+                "checkpoint_to_store": None,
+                "initialize_checkpoint": False,
+            }
 
         session_ids = self._normalize_string_list(job.get("account_sessions"))
         target_channels = [
@@ -3379,7 +3358,13 @@ class MultiSessionManager:
                 "Пропуск мониторинга нейрокомментариев: job_id=%s нет account_sessions или target_channels",
                 job_id,
             )
-            return []
+            return {
+                "fresh_posts": [],
+                "successful_channels": 0,
+                "failed_channels": [],
+                "checkpoint_to_store": None,
+                "initialize_checkpoint": False,
+            }
 
         stored_last_checked_at = self._normalize_datetime_value(job.get("last_checked_at"))
         initialize_checkpoint = stored_last_checked_at is None
@@ -3452,6 +3437,7 @@ class MultiSessionManager:
                         "message_id": int(message_id),
                         "date": message_date.isoformat(),
                         "session_id": session_id,
+                        "post_text": self._extract_ai_comment_post_text(message),
                     }
                 )
                 if newest_fresh_post_at is None or message_date > newest_fresh_post_at:
@@ -3467,26 +3453,107 @@ class MultiSessionManager:
                     len(channel_fresh_posts),
                 )
 
-        if successful_channels == 0:
+        checkpoint_to_store: Optional[datetime] = None
+        if successful_channels > 0:
+            if initialize_checkpoint:
+                checkpoint_to_store = effective_last_checked_at
+            elif newest_fresh_post_at is not None:
+                checkpoint_to_store = newest_fresh_post_at
+
+        return {
+            "fresh_posts": fresh_posts,
+            "successful_channels": successful_channels,
+            "failed_channels": failed_channels,
+            "checkpoint_to_store": checkpoint_to_store,
+            "initialize_checkpoint": initialize_checkpoint,
+        }
+
+    async def _resolve_ai_comment_channel(
+        self,
+        *,
+        job_id: str,
+        session_ids: List[str],
+        channel_identifier: str,
+    ) -> tuple[Optional[TelegramClient], Any, Optional[str], Optional[Union[str, int]]]:
+        parsed_channel_identifier = self._parse_chat_identifier(channel_identifier)
+        if isinstance(parsed_channel_identifier, str) and not parsed_channel_identifier.strip():
+            return None, None, None, None
+
+        for session_id in session_ids:
+            try:
+                client = await self.get_client(session_id)
+            except Exception as e:
+                logger.warning(
+                    "Пропуск session при мониторинге нейрокомментариев: job_id=%s session_id=%s error=%s",
+                    job_id,
+                    session_id,
+                    e,
+                )
+                continue
+
+            try:
+                entity = await client.get_entity(parsed_channel_identifier)
+                return client, entity, session_id, parsed_channel_identifier
+            except FloodWaitError as e:
+                logger.warning(
+                    "FloodWait при получении entity канала: job_id=%s session_id=%s channel=%s wait=%s",
+                    job_id,
+                    session_id,
+                    parsed_channel_identifier,
+                    e.seconds,
+                )
+            except (ValueError, RPCError) as e:
+                logger.warning(
+                    "Не удалось получить entity канала: job_id=%s session_id=%s channel=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_channel_identifier,
+                    e,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Неожиданная ошибка получения entity канала: job_id=%s session_id=%s channel=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_channel_identifier,
+                    e,
+                )
+
+        return None, None, None, parsed_channel_identifier
+
+    async def poll_ai_comment_job_channels(
+        self,
+        job: Dict[str, Any],
+        *,
+        ai_comment_jobs_repo: Optional[AiCommentJobsRepo] = None,
+    ) -> List[Dict[str, Any]]:
+        job_id = str(job.get("id") or "").strip()
+        poll_result = await self._collect_ai_comment_job_fresh_posts(job)
+        fresh_posts = [
+            {
+                "channel_id": post["channel_id"],
+                "message_id": post["message_id"],
+                "date": post["date"],
+                "session_id": post["session_id"],
+            }
+            for post in poll_result["fresh_posts"]
+        ]
+
+        if poll_result["successful_channels"] == 0:
             return fresh_posts
 
-        if failed_channels:
+        if poll_result["failed_channels"]:
             logger.warning(
                 "Не обновляем last_checked_at из-за ошибок чтения каналов: job_id=%s failed_channels=%s",
                 job_id,
-                ",".join(failed_channels),
+                ",".join(poll_result["failed_channels"]),
             )
             return fresh_posts
 
         if ai_comment_jobs_repo is None:
             return fresh_posts
 
-        checkpoint_to_store: Optional[datetime] = None
-        if initialize_checkpoint:
-            checkpoint_to_store = effective_last_checked_at
-        elif newest_fresh_post_at is not None:
-            checkpoint_to_store = newest_fresh_post_at
-
+        checkpoint_to_store = poll_result["checkpoint_to_store"]
         if checkpoint_to_store is None:
             return fresh_posts
 
@@ -3496,7 +3563,7 @@ class MultiSessionManager:
         )
         job["last_checked_at"] = checkpoint_to_store.isoformat()
 
-        if initialize_checkpoint:
+        if poll_result["initialize_checkpoint"]:
             logger.info(
                 "Инициализирован checkpoint кампании нейрокомментариев: job_id=%s last_checked_at=%s",
                 job_id,
@@ -3504,6 +3571,210 @@ class MultiSessionManager:
             )
 
         return fresh_posts
+
+    async def _publish_ai_comment(
+        self,
+        *,
+        job_id: str,
+        session_ids: List[str],
+        channel_id: str,
+        message_id: int,
+        comment_text: str,
+    ) -> Dict[str, Any]:
+        ordered_session_ids = self._get_ai_comment_session_order(job_id, session_ids)
+        parsed_channel_identifier = self._parse_chat_identifier(channel_id)
+        errors: List[str] = []
+
+        for session_id in ordered_session_ids:
+            try:
+                client = await self.get_client(session_id)
+                entity = await client.get_entity(parsed_channel_identifier)
+                sent_message = await client.send_message(
+                    entity,
+                    comment_text,
+                    comment_to=message_id,
+                )
+                return {
+                    "success": True,
+                    "session_id": session_id,
+                    "comment_message_id": getattr(sent_message, "id", None),
+                }
+            except FloodWaitError as e:
+                error_message = (
+                    f"FloodWait при публикации комментария от session '{session_id}', "
+                    f"нужно подождать {e.seconds} сек."
+                )
+                logger.warning(
+                    "FloodWait при публикации нейрокомментария: job_id=%s session_id=%s channel=%s message_id=%s wait=%s",
+                    job_id,
+                    session_id,
+                    channel_id,
+                    message_id,
+                    e.seconds,
+                )
+                errors.append(error_message)
+            except (ValueError, RPCError) as e:
+                error_message = f"Не удалось опубликовать комментарий от session '{session_id}': {e}"
+                logger.warning(
+                    "Не удалось опубликовать нейрокомментарий: job_id=%s session_id=%s channel=%s message_id=%s error=%s",
+                    job_id,
+                    session_id,
+                    channel_id,
+                    message_id,
+                    e,
+                )
+                errors.append(error_message)
+            except Exception as e:
+                error_message = f"Неожиданная ошибка публикации от session '{session_id}': {e}"
+                logger.warning(
+                    "Неожиданная ошибка публикации нейрокомментария: job_id=%s session_id=%s channel=%s message_id=%s error=%s",
+                    job_id,
+                    session_id,
+                    channel_id,
+                    message_id,
+                    e,
+                )
+                errors.append(error_message)
+
+        return {
+            "success": False,
+            "error": "; ".join(errors) if errors else "Не удалось опубликовать комментарий",
+        }
+
+    async def process_ai_comment_jobs(
+        self,
+        job: Dict[str, Any],
+        *,
+        ai_comment_jobs_repo: Optional[AiCommentJobsRepo] = None,
+    ) -> List[Dict[str, Any]]:
+        job_id = str(job.get("id") or "").strip()
+        if not job_id or not bool(job.get("is_active")):
+            return []
+
+        repo = ai_comment_jobs_repo or AiCommentJobsRepo()
+        session_ids = self._normalize_string_list(job.get("account_sessions"))
+        if not session_ids:
+            logger.warning(
+                "Пропуск обработки нейрокомментариев: job_id=%s отсутствуют account_sessions",
+                job_id,
+            )
+            return []
+
+        poll_result = await self._collect_ai_comment_job_fresh_posts(job)
+        fresh_posts = poll_result["fresh_posts"]
+        processed_posts: List[Dict[str, Any]] = []
+
+        for post in fresh_posts:
+            channel_id = str(post["channel_id"])
+            message_id = int(post["message_id"])
+
+            existing_record = repo.get_history_record(
+                job_id=job_id,
+                channel_id=channel_id,
+                message_id=message_id,
+            )
+            if existing_record is not None:
+                logger.info(
+                    "Пропуск уже обработанного поста нейрокомментариев: job_id=%s channel_id=%s message_id=%s status=%s",
+                    job_id,
+                    channel_id,
+                    message_id,
+                    existing_record.get("status"),
+                )
+                processed_posts.append(
+                    {
+                        "channel_id": channel_id,
+                        "message_id": message_id,
+                        "status": "skipped",
+                    }
+                )
+                continue
+
+            generated_comment = await self.generate_ai_comment_with_fallback(
+                job_id=job_id,
+                channel_id=channel_id,
+                message_id=message_id,
+                system_prompt=str(job.get("system_prompt") or ""),
+                user_prompt=str(job.get("user_prompt") or ""),
+                post_text=str(post.get("post_text") or ""),
+                ai_comment_jobs_repo=repo,
+            )
+            if not generated_comment:
+                processed_posts.append(
+                    {
+                        "channel_id": channel_id,
+                        "message_id": message_id,
+                        "status": "failed",
+                    }
+                )
+                continue
+
+            publish_result = await self._publish_ai_comment(
+                job_id=job_id,
+                session_ids=session_ids,
+                channel_id=channel_id,
+                message_id=message_id,
+                comment_text=self._normalize_ai_comment_text(generated_comment),
+            )
+
+            if publish_result["success"]:
+                repo.upsert_history_record(
+                    job_id=job_id,
+                    channel_id=channel_id,
+                    message_id=message_id,
+                    status="posted",
+                    comment_message_id=publish_result.get("comment_message_id"),
+                )
+                processed_posts.append(
+                    {
+                        "channel_id": channel_id,
+                        "message_id": message_id,
+                        "status": "posted",
+                        "session_id": publish_result.get("session_id"),
+                        "comment_message_id": publish_result.get("comment_message_id"),
+                    }
+                )
+                continue
+
+            repo.upsert_history_record(
+                job_id=job_id,
+                channel_id=channel_id,
+                message_id=message_id,
+                status="failed",
+                error=publish_result["error"],
+            )
+            processed_posts.append(
+                {
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "status": "failed",
+                    "error": publish_result["error"],
+                }
+            )
+
+        if poll_result["successful_channels"] > 0 and not poll_result["failed_channels"]:
+            checkpoint_to_store = poll_result["checkpoint_to_store"]
+            if checkpoint_to_store is not None:
+                repo.update_last_checked_at(
+                    job_id=job_id,
+                    last_checked_at=checkpoint_to_store.isoformat(),
+                )
+                job["last_checked_at"] = checkpoint_to_store.isoformat()
+
+                if poll_result["initialize_checkpoint"]:
+                    logger.info(
+                        "Инициализирован checkpoint кампании нейрокомментариев: job_id=%s last_checked_at=%s",
+                        job_id,
+                        checkpoint_to_store.isoformat(),
+                    )
+        elif poll_result["failed_channels"]:
+            logger.warning(
+                "Не обновляем last_checked_at после process_ai_comment_jobs из-за ошибок чтения каналов: job_id=%s failed_channels=%s",
+                job_id,
+                ",".join(poll_result["failed_channels"]),
+            )
+
+        return processed_posts
 
     async def generate_ai_comment_with_fallback(
         self,

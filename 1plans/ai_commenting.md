@@ -56,7 +56,7 @@
   - при старте приложения запускать цикл мониторинга активных кампаний;
   - раз в минуту выбирать из Supabase все записи `ai_comment_jobs`, где `is_active = true`;
   - для каждой кампании проверять новые посты в `target_channels` после `last_checked_at`.
-- [ ] **Реализовать метод `process_ai_comment_jobs`** в `app/telegram_client.py`:
+- [x] **Реализовать метод `process_ai_comment_jobs`** в `app/telegram_client.py`:
   - получать новые посты по каждому каналу через Telethon;
   - проверять идемпотентность через `ai_comment_job_posts` (пропуск уже обработанных);
   - собирать вход в модель: `system_prompt` + `user_prompt` + текст нового поста;
