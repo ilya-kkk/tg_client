@@ -276,6 +276,16 @@ class AiCommentJobsRepo:
         )
         return response.data or []
 
+    def list_active(self) -> List[Dict[str, Any]]:
+        response = (
+            self.client.table(self.table_name)
+            .select("*")
+            .eq("is_active", True)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return response.data or []
+
     def create(self, user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = {**payload, "user_id": user_id}
         response = self.client.table(self.table_name).insert(data).execute()
@@ -301,6 +311,17 @@ class AiCommentJobsRepo:
             self.client.table(self.table_name)
             .update(payload)
             .eq("user_id", user_id)
+            .eq("id", job_id)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return response.data[0]
+
+    def update_last_checked_at(self, job_id: str, last_checked_at: str) -> Optional[Dict[str, Any]]:
+        response = (
+            self.client.table(self.table_name)
+            .update({"last_checked_at": last_checked_at})
             .eq("id", job_id)
             .execute()
         )

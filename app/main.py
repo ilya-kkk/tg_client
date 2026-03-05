@@ -219,20 +219,6 @@ async def reaction_jobs_worker() -> None:
 
         await asyncio.sleep(poll_interval_seconds)
 
-
-def list_active_ai_comment_jobs() -> list[dict]:
-    if ai_comment_jobs_repo is None:
-        return []
-
-    response = (
-        ai_comment_jobs_repo.client.table(ai_comment_jobs_repo.table_name)
-        .select("*")
-        .eq("is_active", True)
-        .execute()
-    )
-    return response.data or []
-
-
 async def ai_comment_jobs_worker() -> None:
     """Фоновый цикл, который раз в минуту запускает обработку активных кампаний нейрокомментирования."""
     while True:
@@ -241,14 +227,19 @@ async def ai_comment_jobs_worker() -> None:
                 await asyncio.sleep(AI_COMMENT_JOBS_POLL_INTERVAL_SECONDS)
                 continue
 
-            process_ai_comment_jobs = getattr(client_manager, "process_ai_comment_jobs", None)
-            if not callable(process_ai_comment_jobs):
-                await asyncio.sleep(AI_COMMENT_JOBS_POLL_INTERVAL_SECONDS)
-                continue
-
-            active_jobs = list_active_ai_comment_jobs()
+            active_jobs = ai_comment_jobs_repo.list_active()
             for job in active_jobs:
-                await process_ai_comment_jobs(job)
+                try:
+                    await client_manager.poll_ai_comment_job_channels(
+                        job,
+                        ai_comment_jobs_repo=ai_comment_jobs_repo,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Ошибка обработки кампании нейрокомментариев: job_id=%s error=%s",
+                        job.get("id"),
+                        e,
+                    )
         except asyncio.CancelledError:
             raise
         except Exception as e:

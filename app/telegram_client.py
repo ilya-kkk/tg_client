@@ -6,7 +6,7 @@ import random
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Union
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -34,6 +34,7 @@ from app.supabase_client import AiCommentJobsRepo, SessionRepo
 
 AUTH_REQUEST_TIMEOUT_SECONDS = 30
 POPULAR_REACTIONS: List[str] = ["👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "💯", "🎉"]
+AI_COMMENT_JOB_MESSAGES_LIMIT = 100
 logger = logging.getLogger(__name__)
 
 
@@ -3255,7 +3256,7 @@ class MultiSessionManager:
 
         return False
 
-    def _normalize_chat_identifier_for_reactions(self, value: str) -> str:
+    def _normalize_chat_identifier(self, value: str) -> str:
         chat = (value or "").strip()
         if chat.startswith("https://t.me/"):
             chat = "@" + chat.removeprefix("https://t.me/").split("?")[0].strip("/")
@@ -3265,11 +3266,244 @@ class MultiSessionManager:
             chat = "@" + chat.removeprefix("t.me/").split("?")[0].strip("/")
         return chat
 
-    def _parse_chat_identifier_for_reactions(self, value: str) -> Union[str, int]:
-        normalized = self._normalize_chat_identifier_for_reactions(value)
+    def _parse_chat_identifier(self, value: str) -> Union[str, int]:
+        normalized = self._normalize_chat_identifier(value)
         if re.fullmatch(r"-?\d+", normalized):
             return int(normalized)
         return normalized
+
+    def _normalize_chat_identifier_for_reactions(self, value: str) -> str:
+        return self._normalize_chat_identifier(value)
+
+    def _parse_chat_identifier_for_reactions(self, value: str) -> Union[str, int]:
+        return self._parse_chat_identifier(value)
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        return [text for item in value if (text := str(item or "").strip())]
+
+    @staticmethod
+    def _normalize_datetime_value(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str):
+            raw_value = value.strip()
+            if not raw_value:
+                return None
+            if raw_value.endswith("Z"):
+                raw_value = raw_value[:-1] + "+00:00"
+            try:
+                parsed = datetime.fromisoformat(raw_value)
+            except ValueError:
+                return None
+        else:
+            return None
+
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    async def _resolve_ai_comment_channel(
+        self,
+        *,
+        job_id: str,
+        session_ids: List[str],
+        channel_identifier: str,
+    ) -> tuple[Optional[TelegramClient], Any, Optional[str], Optional[Union[str, int]]]:
+        parsed_channel_identifier = self._parse_chat_identifier(channel_identifier)
+        if isinstance(parsed_channel_identifier, str) and not parsed_channel_identifier.strip():
+            return None, None, None, None
+
+        for session_id in session_ids:
+            try:
+                client = await self.get_client(session_id)
+            except Exception as e:
+                logger.warning(
+                    "Пропуск session при мониторинге нейрокомментариев: job_id=%s session_id=%s error=%s",
+                    job_id,
+                    session_id,
+                    e,
+                )
+                continue
+
+            try:
+                entity = await client.get_entity(parsed_channel_identifier)
+                return client, entity, session_id, parsed_channel_identifier
+            except FloodWaitError as e:
+                logger.warning(
+                    "FloodWait при получении entity канала: job_id=%s session_id=%s channel=%s wait=%s",
+                    job_id,
+                    session_id,
+                    parsed_channel_identifier,
+                    e.seconds,
+                )
+            except (ValueError, RPCError) as e:
+                logger.warning(
+                    "Не удалось получить entity канала: job_id=%s session_id=%s channel=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_channel_identifier,
+                    e,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Неожиданная ошибка получения entity канала: job_id=%s session_id=%s channel=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_channel_identifier,
+                    e,
+                )
+
+        return None, None, None, parsed_channel_identifier
+
+    async def poll_ai_comment_job_channels(
+        self,
+        job: Dict[str, Any],
+        *,
+        ai_comment_jobs_repo: Optional[AiCommentJobsRepo] = None,
+    ) -> List[Dict[str, Any]]:
+        job_id = str(job.get("id") or "").strip()
+        if not job_id or not bool(job.get("is_active")):
+            return []
+
+        session_ids = self._normalize_string_list(job.get("account_sessions"))
+        target_channels = [
+            self._normalize_chat_identifier(channel)
+            for channel in self._normalize_string_list(job.get("target_channels"))
+        ]
+
+        if not session_ids or not target_channels:
+            logger.warning(
+                "Пропуск мониторинга нейрокомментариев: job_id=%s нет account_sessions или target_channels",
+                job_id,
+            )
+            return []
+
+        stored_last_checked_at = self._normalize_datetime_value(job.get("last_checked_at"))
+        initialize_checkpoint = stored_last_checked_at is None
+        effective_last_checked_at = stored_last_checked_at or datetime.now(timezone.utc)
+        newest_fresh_post_at: Optional[datetime] = stored_last_checked_at
+        fresh_posts: List[Dict[str, Any]] = []
+        successful_channels = 0
+        failed_channels: List[str] = []
+
+        for channel_identifier in target_channels:
+            client, entity, session_id, parsed_channel_identifier = await self._resolve_ai_comment_channel(
+                job_id=job_id,
+                session_ids=session_ids,
+                channel_identifier=channel_identifier,
+            )
+            if client is None or entity is None or session_id is None or parsed_channel_identifier is None:
+                failed_channels.append(channel_identifier)
+                continue
+
+            try:
+                messages = await client.get_messages(
+                    entity,
+                    limit=1 if initialize_checkpoint else AI_COMMENT_JOB_MESSAGES_LIMIT,
+                )
+                successful_channels += 1
+            except FloodWaitError as e:
+                logger.warning(
+                    "FloodWait при чтении постов канала: job_id=%s session_id=%s channel=%s wait=%s",
+                    job_id,
+                    session_id,
+                    parsed_channel_identifier,
+                    e.seconds,
+                )
+                failed_channels.append(channel_identifier)
+                continue
+            except (ValueError, RPCError) as e:
+                logger.warning(
+                    "Не удалось получить посты канала: job_id=%s session_id=%s channel=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_channel_identifier,
+                    e,
+                )
+                failed_channels.append(channel_identifier)
+                continue
+            except Exception as e:
+                logger.warning(
+                    "Неожиданная ошибка чтения постов канала: job_id=%s session_id=%s channel=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_channel_identifier,
+                    e,
+                )
+                failed_channels.append(channel_identifier)
+                continue
+
+            if initialize_checkpoint:
+                continue
+
+            channel_fresh_posts: List[Dict[str, Any]] = []
+            for message in messages or []:
+                message_id = getattr(message, "id", None)
+                message_date = self._normalize_datetime_value(getattr(message, "date", None))
+                if message_id is None or message_date is None or message_date <= effective_last_checked_at:
+                    continue
+
+                channel_fresh_posts.append(
+                    {
+                        "channel_id": str(parsed_channel_identifier),
+                        "message_id": int(message_id),
+                        "date": message_date.isoformat(),
+                        "session_id": session_id,
+                    }
+                )
+                if newest_fresh_post_at is None or message_date > newest_fresh_post_at:
+                    newest_fresh_post_at = message_date
+
+            if channel_fresh_posts:
+                channel_fresh_posts.sort(key=lambda item: item["message_id"])
+                fresh_posts.extend(channel_fresh_posts)
+                logger.info(
+                    "Найдены новые посты для кампании нейрокомментариев: job_id=%s channel=%s count=%s",
+                    job_id,
+                    parsed_channel_identifier,
+                    len(channel_fresh_posts),
+                )
+
+        if successful_channels == 0:
+            return fresh_posts
+
+        if failed_channels:
+            logger.warning(
+                "Не обновляем last_checked_at из-за ошибок чтения каналов: job_id=%s failed_channels=%s",
+                job_id,
+                ",".join(failed_channels),
+            )
+            return fresh_posts
+
+        if ai_comment_jobs_repo is None:
+            return fresh_posts
+
+        checkpoint_to_store: Optional[datetime] = None
+        if initialize_checkpoint:
+            checkpoint_to_store = effective_last_checked_at
+        elif newest_fresh_post_at is not None:
+            checkpoint_to_store = newest_fresh_post_at
+
+        if checkpoint_to_store is None:
+            return fresh_posts
+
+        ai_comment_jobs_repo.update_last_checked_at(
+            job_id=job_id,
+            last_checked_at=checkpoint_to_store.isoformat(),
+        )
+        job["last_checked_at"] = checkpoint_to_store.isoformat()
+
+        if initialize_checkpoint:
+            logger.info(
+                "Инициализирован checkpoint кампании нейрокомментариев: job_id=%s last_checked_at=%s",
+                job_id,
+                checkpoint_to_store.isoformat(),
+            )
+
+        return fresh_posts
 
     async def generate_ai_comment_with_fallback(
         self,
