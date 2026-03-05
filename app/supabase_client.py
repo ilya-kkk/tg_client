@@ -259,6 +259,73 @@ class ReactionJobsRepo:
         return self.get_by_id(user_id=user_id, job_id=job_id) is None
 
 
+class AiCommentJobsRepo:
+    """Репозиторий кампаний нейрокомментирования."""
+
+    def __init__(self, client: Optional[Client] = None):
+        self.client = client or get_supabase_client()
+        self.table_name = "ai_comment_jobs"
+
+    def list_by_user(self, user_id: str) -> List[Dict[str, Any]]:
+        response = (
+            self.client.table(self.table_name)
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return response.data or []
+
+    def create(self, user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        data = {**payload, "user_id": user_id}
+        response = self.client.table(self.table_name).insert(data).execute()
+        if response.data:
+            return response.data[0]
+        return data
+
+    def get_by_id(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]:
+        response = (
+            self.client.table(self.table_name)
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("id", job_id)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return response.data[0]
+
+    def update(self, user_id: str, job_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        response = (
+            self.client.table(self.table_name)
+            .update(payload)
+            .eq("user_id", user_id)
+            .eq("id", job_id)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return response.data[0]
+
+    def delete(self, user_id: str, job_id: str) -> bool:
+        existing = self.get_by_id(user_id=user_id, job_id=job_id)
+        if existing is None:
+            return False
+        self.client.table(self.table_name).delete().eq("user_id", user_id).eq("id", job_id).execute()
+        return self.get_by_id(user_id=user_id, job_id=job_id) is None
+
+    def list_history(self, user_id: str, job_id: str) -> List[Dict[str, Any]]:
+        response = (
+            self.client.table("ai_comment_job_posts")
+            .select("channel_id,message_id,status,error,created_at")
+            .eq("job_id", job_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return response.data or []
+
+
 class WarmupJobsRepo:
     """Репозиторий кампаний прогрева."""
 

@@ -1485,6 +1485,103 @@ class ReactionJobOut(BaseModel):
     updated_at: datetime
 
 
+class AiCommentJobCreate(BaseModel):
+    """Запрос на создание кампании нейрокомментирования."""
+    name: str = Field(..., min_length=1, max_length=120)
+    account_sessions: list[str] = Field(..., min_length=1)
+    target_channels: list[str] = Field(..., min_length=1)
+    user_prompt: str = Field(..., min_length=1)
+    system_prompt: str = Field(..., min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Название кампании не может быть пустым")
+        return value
+
+    @field_validator("account_sessions", "target_channels")
+    @classmethod
+    def validate_non_empty_items(cls, v: list[str]) -> list[str]:
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Список не может быть пустым")
+        return values
+
+    @field_validator("user_prompt", "system_prompt")
+    @classmethod
+    def validate_prompts(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Промпт не может быть пустым")
+        return value
+
+
+class AiCommentJobUpdate(BaseModel):
+    """Запрос на обновление кампании нейрокомментирования."""
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    account_sessions: Optional[list[str]] = Field(None, min_length=1)
+    target_channels: Optional[list[str]] = Field(None, min_length=1)
+    user_prompt: Optional[str] = Field(None, min_length=1)
+    system_prompt: Optional[str] = Field(None, min_length=1)
+    is_active: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_optional_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            raise ValueError("Название кампании не может быть пустым")
+        return value
+
+    @field_validator("account_sessions", "target_channels")
+    @classmethod
+    def validate_optional_non_empty_items(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return None
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Список не может быть пустым")
+        return values
+
+    @field_validator("user_prompt", "system_prompt")
+    @classmethod
+    def validate_optional_prompts(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            raise ValueError("Промпт не может быть пустым")
+        return value
+
+
+class AiCommentJobOut(BaseModel):
+    """Выходная модель кампании нейрокомментирования."""
+    id: str
+    user_id: str
+    name: str
+    account_sessions: list[str]
+    target_channels: list[str]
+    user_prompt: str
+    system_prompt: str
+    is_active: bool
+    last_checked_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AiCommentJobPostOut(BaseModel):
+    """Выходная модель истории обработки постов в кампании нейрокомментирования."""
+    channel_id: str
+    message_id: int
+    status: Literal["posted", "skipped", "failed"]
+    error: Optional[str] = None
+    created_at: datetime
+
+
 class WarmupJobCreate(BaseModel):
     """Запрос на создание кампании прогрева."""
     name: str = Field(..., min_length=1, max_length=120)

@@ -33,16 +33,16 @@
 
 ### 2. Backend: Pydantic-схемы и CRUD
 
-- [ ] **Добавить Pydantic-схемы** в `app/models.py`:
+- [x] **Добавить Pydantic-схемы** в `app/models.py`:
   - `AiCommentJobCreate` — поля: `name`, `account_sessions: list[str]`, `target_channels: list[str]`, `user_prompt: str`, `system_prompt: str`
   - `AiCommentJobUpdate` — те же поля, все опциональные + опциональный `is_active: bool`
   - `AiCommentJobOut` — все поля включая `id`, `user_id`, `is_active`, `last_checked_at`, `created_at`, `updated_at`
   - `AiCommentJobPostOut` — история обработки постов (`channel_id`, `message_id`, `status`, `error`, `created_at`)
-- [ ] **Добавить эндпоинт `GET /users/{user_id}/ai-comment-jobs`** — список всех кампаний пользователя, возвращает `list[AiCommentJobOut]`
-- [ ] **Добавить эндпоинт `POST /users/{user_id}/ai-comment-jobs`** — создание новой кампании, принимает `AiCommentJobCreate`, возвращает `AiCommentJobOut`
-- [ ] **Добавить эндпоинт `PATCH /users/{user_id}/ai-comment-jobs/{job_id}`** — обновление кампании (редактирование или переключение `is_active`), принимает `AiCommentJobUpdate`, возвращает `AiCommentJobOut`
-- [ ] **Добавить эндпоинт `DELETE /users/{user_id}/ai-comment-jobs/{job_id}`** — удаление кампании, возвращает `{ "success": true }`
-- [ ] **Добавить эндпоинт `GET /users/{user_id}/ai-comment-jobs/{job_id}/history`** — история комментариев/ошибок по кампании, возвращает `list[AiCommentJobPostOut]`
+- [x] **Добавить эндпоинт `GET /users/{user_id}/ai-comment-jobs`** — список всех кампаний пользователя, возвращает `list[AiCommentJobOut]`
+- [x] **Добавить эндпоинт `POST /users/{user_id}/ai-comment-jobs`** — создание новой кампании, принимает `AiCommentJobCreate`, возвращает `AiCommentJobOut`
+- [x] **Добавить эндпоинт `PATCH /users/{user_id}/ai-comment-jobs/{job_id}`** — обновление кампании (редактирование или переключение `is_active`), принимает `AiCommentJobUpdate`, возвращает `AiCommentJobOut`
+- [x] **Добавить эндпоинт `DELETE /users/{user_id}/ai-comment-jobs/{job_id}`** — удаление кампании, возвращает `{ "success": true }`
+- [x] **Добавить эндпоинт `GET /users/{user_id}/ai-comment-jobs/{job_id}/history`** — история комментариев/ошибок по кампании, возвращает `list[AiCommentJobPostOut]`
 - [ ] **Добавить сервис OpenRouter** в `app/telegram_client.py` или отдельный модуль `app/ai_client.py`:
   - использовать `OPENROUTER_API_KEY` из `.env`;
   - задать список бесплатных моделей (например: `["meta-llama/llama-3.1-8b-instruct:free", "qwen/qwen-2.5-7b-instruct:free", "google/gemma-2-9b-it:free"]`);
