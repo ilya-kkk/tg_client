@@ -1577,6 +1577,7 @@ class AiCommentJobPostOut(BaseModel):
     """Выходная модель истории обработки постов в кампании нейрокомментирования."""
     channel_id: str
     message_id: int
+    comment_message_id: Optional[int] = None
     status: Literal["posted", "skipped", "failed"]
     error: Optional[str] = None
     created_at: datetime

@@ -184,6 +184,36 @@
   align-items: center;
   gap: 0.55rem;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.historyButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.3rem;
+  border: 1px solid #334155;
+  border-radius: 0.7rem;
+  background: #111827;
+  color: #e2e8f0;
+  padding: 0 0.85rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.historyButton:hover {
+  transform: translateY(-1px);
+}
+
+.historyButton:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .iconButton,
@@ -310,6 +340,147 @@
   color: #cbd5e1;
 }
 
+.drawerOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(2, 6, 23, 0.72);
+}
+
+.drawer {
+  width: min(560px, 100%);
+  height: 100%;
+  overflow: auto;
+  border-left: 1px solid #23304b;
+  background:
+    linear-gradient(180deg, rgba(8, 15, 32, 0.98), rgba(10, 18, 34, 0.98)),
+    radial-gradient(circle at top left, rgba(34, 197, 94, 0.14), transparent 42%);
+  padding: 1.1rem;
+  box-shadow: -24px 0 60px rgba(2, 6, 23, 0.45);
+}
+
+.drawerHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.drawerEyebrow {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #86efac;
+}
+
+.drawerTitle {
+  margin: 0.35rem 0 0;
+  font-size: 1.35rem;
+}
+
+.drawerSubtitle {
+  margin: 0.45rem 0 0;
+  color: #94a3b8;
+}
+
+.historyLoadingState,
+.historyList {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.historySkeletonItem {
+  height: 120px;
+  border-radius: 0.95rem;
+  background: linear-gradient(90deg, #0f172a, #16213a, #0f172a);
+  background-size: 200% 100%;
+  animation: shimmer 1.1s linear infinite;
+}
+
+.historyItem {
+  border: 1px solid #223149;
+  border-radius: 0.95rem;
+  background: rgba(11, 18, 35, 0.92);
+  padding: 0.95rem 1rem;
+}
+
+.historyTopRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.historyStatusBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.8rem;
+  border-radius: 999px;
+  padding: 0.2rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.historyStatusPosted {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+
+.historyStatusSkipped {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+.historyStatusFailed {
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
+}
+
+.historyDate {
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+
+.historyChannel,
+.historyMeta,
+.historySummary,
+.historyErrorText {
+  margin: 0;
+}
+
+.historyChannel {
+  margin-top: 0.85rem;
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: #f8fafc;
+  word-break: break-word;
+}
+
+.historyMeta {
+  margin-top: 0.3rem;
+  font-size: 0.86rem;
+  color: #94a3b8;
+}
+
+.historySummary {
+  margin-top: 0.7rem;
+  color: #e2e8f0;
+}
+
+.historyErrorText {
+  margin-top: 0.7rem;
+  border-top: 1px solid rgba(239, 68, 68, 0.14);
+  padding-top: 0.7rem;
+  color: #fecaca;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .modalOverlay {
   position: fixed;
   inset: 0;
@@ -384,7 +555,25 @@
   }
 
   .actions {
-    justify-content: space-between;
+    justify-content: flex-start;
+  }
+
+  .historyButton {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .drawer {
+    width: 100%;
+    padding: 1rem;
+  }
+
+  .drawerHeader {
+    flex-direction: column;
+  }
+
+  .drawerHeader .secondaryButton {
+    width: 100%;
   }
 
   .modalActions {

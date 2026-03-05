@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import styles from "./ai-commenting.module.css";
 
 const API_BASE = "http://localhost:8000";
@@ -26,6 +26,17 @@ interface AiCommentJob {
   last_checked_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+type AiCommentJobHistoryStatus = "posted" | "skipped" | "failed";
+
+interface AiCommentJobPost {
+  channel_id: string;
+  message_id: number;
+  comment_message_id: number | null;
+  status: AiCommentJobHistoryStatus;
+  error: string | null;
+  created_at: string;
 }
 
 interface ApiErrorResponse {
@@ -202,6 +213,46 @@ function mergeChannelOptions(options: ChannelOption[], selectedChannels: string[
   return Array.from(merged.values()).sort((left, right) => left.label.localeCompare(right.label));
 }
 
+function formatHistoryTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(date);
+}
+
+function getHistoryStatusLabel(status: AiCommentJobHistoryStatus): string {
+  switch (status) {
+    case "posted":
+      return "Опубликован";
+    case "skipped":
+      return "Пропущен";
+    case "failed":
+      return "Ошибка";
+    default:
+      return status;
+  }
+}
+
+function getHistorySummary(item: AiCommentJobPost): string {
+  switch (item.status) {
+    case "posted":
+      return item.comment_message_id
+        ? `Комментарий опубликован, id комментария #${item.comment_message_id}.`
+        : "Комментарий опубликован.";
+    case "skipped":
+      return "Пост пропущен и не требует новой публикации.";
+    case "failed":
+      return "Публикация не удалась.";
+    default:
+      return "";
+  }
+}
+
 function EditIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" className={styles.icon}>
@@ -248,6 +299,29 @@ function TrashIcon() {
   );
 }
 
+function HistoryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={styles.icon}>
+      <path
+        d="M12 8v5l3 2"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M3.5 12a8.5 8.5 0 1 0 2.49-6.01L3 9"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
 function SpinnerIcon() {
   return <span className={styles.actionSpinner} aria-hidden="true" />;
 }
@@ -264,17 +338,23 @@ export default function AiCommentingPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
+  const [history, setHistory] = useState<AiCommentJobPost[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState<boolean>(false);
+  const [historyJobId, setHistoryJobId] = useState<string | null>(null);
 
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [togglingJobIds, setTogglingJobIds] = useState<Set<string>>(new Set());
   const [sessionsLoading, setSessionsLoading] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
+  const [historyLoadingJobId, setHistoryLoadingJobId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingJob, setEditingJob] = useState<AiCommentJob | null>(null);
   const [form, setForm] = useState<JobFormState>(createInitialForm);
   const [availableChannels, setAvailableChannels] = useState<ChannelOption[]>([]);
   const [loadingChannels, setLoadingChannels] = useState<boolean>(false);
   const [channelsError, setChannelsError] = useState<string | null>(null);
+  const historyRequestIdRef = useRef<number>(0);
 
   useEffect(() => {
     const savedUserId = window.localStorage.getItem(STORAGE_USER_ID_KEY);
@@ -486,9 +566,19 @@ export default function AiCommentingPage() {
     setModalError(null);
   }
 
+  function resetHistoryState() {
+    historyRequestIdRef.current += 1;
+    setHistory([]);
+    setHistoryError(null);
+    setHistoryLoading(false);
+    setHistoryLoadingJobId(null);
+    setHistoryJobId(null);
+  }
+
   function openCreateModal() {
     setActionError(null);
     setNotice(null);
+    resetHistoryState();
     setEditingJob(null);
     setForm(createInitialForm());
     setAvailableChannels([]);
@@ -500,6 +590,7 @@ export default function AiCommentingPage() {
   function openEditModal(job: AiCommentJob) {
     setActionError(null);
     setNotice(null);
+    resetHistoryState();
     setEditingJob(job);
     setForm(toForm(job));
     setAvailableChannels([]);
@@ -514,6 +605,60 @@ export default function AiCommentingPage() {
     }
 
     resetModalState();
+  }
+
+  const loadHistory = useCallback(
+    async (job: AiCommentJob) => {
+      const requestId = historyRequestIdRef.current + 1;
+      historyRequestIdRef.current = requestId;
+
+      setActionError(null);
+      setNotice(null);
+      setHistory([]);
+      setHistoryError(null);
+      setHistoryLoading(true);
+      setHistoryJobId(job.id);
+      setHistoryLoadingJobId(job.id);
+
+      if (!userId) {
+        setHistoryError("Пользователь не определен. Войдите заново.");
+        setHistoryLoading(false);
+        setHistoryLoadingJobId(null);
+        return;
+      }
+
+      try {
+        const response = await fetchJson<AiCommentJobPost[]>(
+          `${API_BASE}/users/${userId}/ai-comment-jobs/${job.id}/history`
+        );
+
+        if (historyRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        setHistory(response);
+      } catch (error: unknown) {
+        if (historyRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        if (error instanceof Error) {
+          setHistoryError(error.message);
+        } else {
+          setHistoryError("Не удалось загрузить историю кампании");
+        }
+      } finally {
+        if (historyRequestIdRef.current === requestId) {
+          setHistoryLoading(false);
+          setHistoryLoadingJobId(null);
+        }
+      }
+    },
+    [userId]
+  );
+
+  function closeHistory() {
+    resetHistoryState();
   }
 
   async function submitModal(event: FormEvent<HTMLFormElement>) {
@@ -703,6 +848,9 @@ export default function AiCommentingPage() {
       setCampaigns((currentCampaigns) =>
         currentCampaigns.filter((campaign) => campaign.id !== job.id)
       );
+      if (historyJobId === job.id) {
+        closeHistory();
+      }
       setNotice(`Кампания «${job.name}» удалена.`);
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -719,6 +867,9 @@ export default function AiCommentingPage() {
   const showList = !loading && !loadError && campaigns.length > 0;
   const displayedSessions = mergeSessionOptions(sessions, form.account_sessions);
   const displayedChannels = mergeChannelOptions(availableChannels, form.target_channels);
+  const historyJob = historyJobId
+    ? campaigns.find((campaign) => campaign.id === historyJobId) ?? null
+    : null;
 
   return (
     <section className={styles.page}>
@@ -771,6 +922,7 @@ export default function AiCommentingPage() {
           {campaigns.map((job) => {
             const isDeleting = deletingJobId === job.id;
             const isToggling = togglingJobIds.has(job.id);
+            const isHistoryLoading = historyLoadingJobId === job.id;
 
             return (
               <article key={job.id} className={styles.row}>
@@ -782,6 +934,19 @@ export default function AiCommentingPage() {
                 </div>
 
                 <div className={styles.actions}>
+                  <button
+                    type="button"
+                    className={styles.historyButton}
+                    onClick={() => void loadHistory(job)}
+                    disabled={isDeleting || isHistoryLoading}
+                    aria-busy={isHistoryLoading}
+                    aria-label={`Открыть историю кампании ${job.name}`}
+                    title={isHistoryLoading ? "Загрузка истории" : "История кампании"}
+                  >
+                    {isHistoryLoading ? <SpinnerIcon /> : <HistoryIcon />}
+                    <span>История</span>
+                  </button>
+
                   <button
                     type="button"
                     className={styles.iconButton}
@@ -826,6 +991,100 @@ export default function AiCommentingPage() {
               </article>
             );
           })}
+        </div>
+      )}
+
+      {historyJob && (
+        <div className={styles.drawerOverlay} onClick={closeHistory}>
+          <aside
+            className={styles.drawer}
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-comment-history-title"
+          >
+            <div className={styles.drawerHeader}>
+              <div>
+                <p className={styles.drawerEyebrow}>История кампании</p>
+                <h2 id="ai-comment-history-title" className={styles.drawerTitle}>
+                  {historyJob.name}
+                </h2>
+                <p className={styles.drawerSubtitle}>
+                  Последние статусы по постам, комментариям и ошибкам этой кампании.
+                </p>
+              </div>
+              <button type="button" className={styles.secondaryButton} onClick={closeHistory}>
+                Закрыть
+              </button>
+            </div>
+
+            {historyLoading && (
+              <div className={styles.historyLoadingState} aria-label="Загрузка истории кампании">
+                {Array.from({ length: 4 }, (_, index) => (
+                  <div key={index} className={styles.historySkeletonItem} />
+                ))}
+              </div>
+            )}
+
+            {!historyLoading && historyError && (
+              <div className={styles.errorState}>
+                <p className={styles.stateTitle}>Не удалось загрузить историю</p>
+                <p className={styles.stateText}>{historyError}</p>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() => void loadHistory(historyJob)}
+                >
+                  Повторить
+                </button>
+              </div>
+            )}
+
+            {!historyLoading && !historyError && history.length === 0 && (
+              <div className={styles.emptyState}>
+                <p className={styles.stateTitle}>История пока пуста</p>
+                <p className={styles.stateText}>
+                  Как только кампания обработает новые посты, здесь появятся статусы публикаций.
+                </p>
+              </div>
+            )}
+
+            {!historyLoading && !historyError && history.length > 0 && (
+              <div className={styles.historyList}>
+                {history.map((item) => (
+                  <article
+                    key={`${item.channel_id}-${item.message_id}-${item.created_at}`}
+                    className={styles.historyItem}
+                  >
+                    <div className={styles.historyTopRow}>
+                      <span
+                        className={`${styles.historyStatusBadge} ${
+                          item.status === "posted"
+                            ? styles.historyStatusPosted
+                            : item.status === "failed"
+                              ? styles.historyStatusFailed
+                              : styles.historyStatusSkipped
+                        }`}
+                      >
+                        {getHistoryStatusLabel(item.status)}
+                      </span>
+                      <time className={styles.historyDate} dateTime={item.created_at}>
+                        {formatHistoryTimestamp(item.created_at)}
+                      </time>
+                    </div>
+
+                    <p className={styles.historyChannel}>{item.channel_id}</p>
+                    <p className={styles.historyMeta}>
+                      Пост #{item.message_id}
+                      {item.comment_message_id ? ` · комментарий #${item.comment_message_id}` : ""}
+                    </p>
+                    <p className={styles.historySummary}>{getHistorySummary(item)}</p>
+                    {item.error && <p className={styles.historyErrorText}>{item.error}</p>}
+                  </article>
+                ))}
+              </div>
+            )}
+          </aside>
         </div>
       )}
 

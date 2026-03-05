@@ -351,7 +351,7 @@ class AiCommentJobsRepo:
     def list_history(self, user_id: str, job_id: str) -> List[Dict[str, Any]]:
         response = (
             self.client.table("ai_comment_job_posts")
-            .select("channel_id,message_id,status,error,created_at")
+            .select("channel_id,message_id,comment_message_id,status,error,created_at")
             .eq("job_id", job_id)
             .order("created_at", desc=True)
             .execute()
