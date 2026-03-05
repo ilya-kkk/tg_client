@@ -16,7 +16,7 @@
   - `last_checked_at` (timestamptz, NULL) — отметка последней проверки новых постов
   - `created_at` (timestamptz, default now())
   - `updated_at` (timestamptz, default now())
-- [ ] **Создать таблицу `ai_comment_job_posts` в Supabase** для идемпотентности (чтобы не комментировать один пост дважды):
+- [x] **Создать таблицу `ai_comment_job_posts` в Supabase** для идемпотентности (чтобы не комментировать один пост дважды):
   - `id` (uuid, PK, default gen_random_uuid())
   - `job_id` (uuid, FK → ai_comment_jobs.id, NOT NULL)
   - `channel_id` (text, NOT NULL)
