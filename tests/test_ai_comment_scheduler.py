@@ -127,6 +127,7 @@ def _install_dependency_stubs() -> None:
 
 _install_dependency_stubs()
 
+from telethon.errors import FloodWaitError
 from app.telegram_client import MultiSessionManager
 
 
@@ -144,23 +145,52 @@ class FakeSentMessage:
         self.id = message_id
 
 
+class ChatWriteForbiddenError(Exception):
+    pass
+
+
 class FakeClient:
-    def __init__(self, messages_by_entity=None, failing_entities=None, failing_send_entities=None):
+    def __init__(
+        self,
+        messages_by_entity=None,
+        failing_entities=None,
+        failing_send_entities=None,
+        entity_errors=None,
+        message_errors=None,
+        send_errors=None,
+    ):
         self.messages_by_entity = messages_by_entity or {}
         self.failing_entities = set(failing_entities or [])
         self.failing_send_entities = set(failing_send_entities or [])
+        self.entity_errors = entity_errors or {}
+        self.message_errors = message_errors or {}
+        self.send_errors = send_errors or {}
         self.sent_messages = []
+        self.send_attempts = []
 
     async def get_entity(self, entity):
+        if entity in self.entity_errors:
+            raise self.entity_errors[entity]
         if entity in self.failing_entities:
             raise ValueError(f"entity {entity} is unavailable")
         return entity
 
     async def get_messages(self, entity, limit: int):
+        if entity in self.message_errors:
+            raise self.message_errors[entity]
         messages = self.messages_by_entity.get(entity, [])
         return list(messages)[:limit]
 
     async def send_message(self, entity, message: str, comment_to: int | None = None):
+        self.send_attempts.append(
+            {
+                "entity": entity,
+                "message": message,
+                "comment_to": comment_to,
+            }
+        )
+        if entity in self.send_errors:
+            raise self.send_errors[entity]
         if entity in self.failing_send_entities:
             raise ValueError(f"entity {entity} does not allow comments")
         sent_message = FakeSentMessage(len(self.sent_messages) + 1000)
@@ -261,6 +291,37 @@ class TestMultiSessionManager(MultiSessionManager):
         if generated is None:
             return None
         return generated
+
+
+class FailingGenerationManager(TestMultiSessionManager):
+    def __init__(self, clients_by_session, failing_message_ids=None):
+        super().__init__(clients_by_session)
+        self.failing_message_ids = set(failing_message_ids or [])
+
+    async def generate_ai_comment_with_fallback(
+        self,
+        *,
+        job_id: str,
+        channel_id: str,
+        message_id: int,
+        system_prompt: str,
+        user_prompt: str,
+        post_text: str,
+        ai_comment_jobs_repo=None,
+        fallback_models=None,
+    ):
+        if message_id in self.failing_message_ids:
+            raise RuntimeError(f"boom-{message_id}")
+        return await super().generate_ai_comment_with_fallback(
+            job_id=job_id,
+            channel_id=channel_id,
+            message_id=message_id,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            post_text=post_text,
+            ai_comment_jobs_repo=ai_comment_jobs_repo,
+            fallback_models=fallback_models,
+        )
 
 
 class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
@@ -595,13 +656,13 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(processed_posts), 1)
         self.assertEqual(processed_posts[0]["status"], "failed")
-        self.assertIn("session-a", processed_posts[0]["error"])
+        self.assertIn("отключены комментарии", processed_posts[0]["error"])
         self.assertEqual(
             repo.history_records[("job-6", "@channel_five", 605)]["status"],
             "failed",
         )
         self.assertIn(
-            "session-a",
+            "отключены комментарии",
             repo.history_records[("job-6", "@channel_five", 605)]["error"],
         )
         self.assertEqual(
@@ -613,6 +674,140 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+
+    async def test_process_posts_uses_next_session_when_first_has_no_rights(self):
+        repo = FakeAiCommentJobsRepo()
+        session_a_client = FakeClient(
+            messages_by_entity={
+                "@channel_six": [
+                    FakeMessage(706, datetime(2026, 3, 5, 17, 5, tzinfo=timezone.utc), "rights test"),
+                ]
+            },
+            send_errors={"@channel_six": ChatWriteForbiddenError("CHAT_WRITE_FORBIDDEN")},
+        )
+        session_b_client = FakeClient()
+        manager = TestMultiSessionManager(
+            {
+                "session-a": session_a_client,
+                "session-b": session_b_client,
+            }
+        )
+        manager.generated_comments = {706: "publish comment"}
+        job = {
+            "id": "job-7",
+            "is_active": True,
+            "account_sessions": ["session-a", "session-b"],
+            "target_channels": ["@channel_six"],
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "last_checked_at": "2026-03-05T17:00:00+00:00",
+        }
+
+        processed_posts = await manager.process_ai_comment_jobs(
+            job,
+            ai_comment_jobs_repo=repo,
+        )
+
+        self.assertEqual(len(processed_posts), 1)
+        self.assertEqual(processed_posts[0]["status"], "posted")
+        self.assertEqual(processed_posts[0]["session_id"], "session-b")
+        self.assertEqual(len(session_a_client.send_attempts), 1)
+        self.assertEqual(len(session_b_client.sent_messages), 1)
+
+    async def test_process_posts_skips_paused_session_after_flood_wait(self):
+        repo = FakeAiCommentJobsRepo()
+        session_a_client = FakeClient(
+            messages_by_entity={
+                "@channel_seven": [
+                    FakeMessage(803, datetime(2026, 3, 5, 18, 7, tzinfo=timezone.utc), "post three"),
+                    FakeMessage(802, datetime(2026, 3, 5, 18, 6, tzinfo=timezone.utc), "post two"),
+                    FakeMessage(801, datetime(2026, 3, 5, 18, 5, tzinfo=timezone.utc), "post one"),
+                ]
+            },
+            send_errors={"@channel_seven": FloodWaitError(30)},
+        )
+        session_b_client = FakeClient()
+        manager = TestMultiSessionManager(
+            {
+                "session-a": session_a_client,
+                "session-b": session_b_client,
+            }
+        )
+        manager.generated_comments = {
+            801: "comment one",
+            802: "comment two",
+            803: "comment three",
+        }
+        job = {
+            "id": "job-8",
+            "is_active": True,
+            "account_sessions": ["session-a", "session-b"],
+            "target_channels": ["@channel_seven"],
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "last_checked_at": "2026-03-05T18:00:00+00:00",
+        }
+
+        processed_posts = await manager.process_ai_comment_jobs(
+            job,
+            ai_comment_jobs_repo=repo,
+        )
+
+        self.assertEqual(
+            [item["status"] for item in processed_posts],
+            ["posted", "posted", "posted"],
+        )
+        self.assertEqual(len(session_a_client.send_attempts), 1)
+        self.assertEqual(len(session_b_client.sent_messages), 3)
+        self.assertTrue(all(item["session_id"] == "session-b" for item in processed_posts))
+
+    async def test_process_posts_continues_after_unexpected_single_post_error(self):
+        repo = FakeAiCommentJobsRepo()
+        session_a_client = FakeClient(
+            messages_by_entity={
+                "@channel_eight": [
+                    FakeMessage(902, datetime(2026, 3, 5, 19, 6, tzinfo=timezone.utc), "second post"),
+                    FakeMessage(901, datetime(2026, 3, 5, 19, 5, tzinfo=timezone.utc), "first post"),
+                ]
+            }
+        )
+        manager = FailingGenerationManager(
+            {"session-a": session_a_client},
+            failing_message_ids={901},
+        )
+        manager.generated_comments = {902: "safe comment"}
+        job = {
+            "id": "job-9",
+            "is_active": True,
+            "account_sessions": ["session-a"],
+            "target_channels": ["@channel_eight"],
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "last_checked_at": "2026-03-05T19:00:00+00:00",
+        }
+
+        processed_posts = await manager.process_ai_comment_jobs(
+            job,
+            ai_comment_jobs_repo=repo,
+        )
+
+        self.assertEqual(len(processed_posts), 2)
+        self.assertEqual(processed_posts[0]["status"], "failed")
+        self.assertIn("boom-901", processed_posts[0]["error"])
+        self.assertEqual(processed_posts[1]["status"], "posted")
+        self.assertEqual(
+            repo.history_records[("job-9", "@channel_eight", 901)]["status"],
+            "failed",
+        )
+
+    def test_normalize_ai_comment_text_cleans_wrappers_and_truncates(self):
+        cleaned = MultiSessionManager._normalize_ai_comment_text(
+            "```text\nКомментарий:   hello   world  \n\nsecond line\n```"
+        )
+        truncated = MultiSessionManager._normalize_ai_comment_text("x" * 1100, limit=1000)
+
+        self.assertEqual(cleaned, "hello world\nsecond line")
+        self.assertEqual(len(truncated), 1000)
 
 
 if __name__ == "__main__":

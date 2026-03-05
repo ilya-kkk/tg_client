@@ -35,6 +35,45 @@ from app.supabase_client import AiCommentJobsRepo, SessionRepo
 AUTH_REQUEST_TIMEOUT_SECONDS = 30
 POPULAR_REACTIONS: List[str] = ["👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "💯", "🎉"]
 AI_COMMENT_JOB_MESSAGES_LIMIT = 100
+AI_COMMENT_TEXT_LIMIT = 1000
+AI_COMMENT_FLOOD_WAIT_PADDING_SECONDS = 60
+AI_COMMENT_COMMENTS_DISABLED_MARKERS = (
+    "commenttodiscussionerror",
+    "discussionmessageforbiddenerror",
+    "msgidinvaliderror",
+    "comments are disabled",
+    "comments disabled",
+    "commenting is not allowed",
+    "discussion is disabled",
+    "does not allow comments",
+    "no linked discussion",
+)
+AI_COMMENT_ACCOUNT_NO_RIGHTS_MARKERS = (
+    "chatwriteforbiddenerror",
+    "chatadminrequirederror",
+    "userbannedinchannelerror",
+    "usernotparticipanterror",
+    "channelprivateerror",
+    "write forbidden",
+    "not enough rights",
+    "not enough permissions",
+    "no rights",
+    "permission denied",
+    "not allowed to send",
+)
+AI_COMMENT_CHANNEL_UNAVAILABLE_MARKERS = (
+    "channelinvaliderror",
+    "channelpublicgroupnaerror",
+    "usernameinvaliderror",
+    "usernamenotoccupiederror",
+    "invitehashexpirederror",
+    "invitehashinvaliderror",
+    "peeridinvaliderror",
+    "cannot find any entity",
+    "chat not found",
+    "channel is unavailable",
+    " is unavailable",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +106,7 @@ class MultiSessionManager:
         self._reaction_counters: Dict[str, int] = {}
         self._reaction_last_seen_ids: Dict[str, int] = {}
         self._ai_comment_job_round_robin_indexes: Dict[str, int] = {}
+        self._ai_comment_session_pause_until: Dict[str, float] = {}
 
     def _get_session_repo(self) -> SessionRepo:
         if self.session_repo is None:
@@ -3242,6 +3282,7 @@ class MultiSessionManager:
         self._auth_clients.clear()
         self._authorized_sessions.clear()
         self._ai_comment_job_round_robin_indexes.clear()
+        self._ai_comment_session_pause_until.clear()
     
     def is_connected(self, session_id: Optional[str] = None) -> bool:
         """Проверяет, авторизована ли сессия."""
@@ -3308,6 +3349,151 @@ class MultiSessionManager:
         return parsed
 
     @staticmethod
+    def _current_monotonic_time() -> float:
+        return time.monotonic()
+
+    @staticmethod
+    def _error_name(error: BaseException) -> str:
+        return type(error).__name__
+
+    @classmethod
+    def _extract_flood_wait_seconds(cls, error: BaseException) -> int:
+        if cls._error_name(error) != "FloodWaitError":
+            return 0
+
+        raw_seconds = getattr(error, "seconds", 0)
+        try:
+            seconds = int(raw_seconds)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, seconds)
+
+    @classmethod
+    def _build_ai_comment_error_signature(cls, error: BaseException) -> str:
+        parts: List[str] = [cls._error_name(error)]
+        raw_message = getattr(error, "message", None)
+        if isinstance(raw_message, str) and raw_message.strip():
+            parts.append(raw_message.strip())
+
+        rendered = str(error).strip()
+        if rendered and rendered not in parts:
+            parts.append(rendered)
+
+        return " | ".join(parts).casefold()
+
+    @classmethod
+    def _classify_ai_comment_error(cls, error: BaseException) -> str:
+        if cls._error_name(error) == "FloodWaitError":
+            return "flood_wait"
+
+        signature = cls._build_ai_comment_error_signature(error)
+        if any(marker in signature for marker in AI_COMMENT_COMMENTS_DISABLED_MARKERS):
+            return "comments_disabled"
+        if any(marker in signature for marker in AI_COMMENT_ACCOUNT_NO_RIGHTS_MARKERS):
+            return "account_no_rights"
+        if any(marker in signature for marker in AI_COMMENT_CHANNEL_UNAVAILABLE_MARKERS):
+            return "channel_unavailable"
+        return "generic"
+
+    def _get_ai_comment_session_pause_remaining(self, session_id: str) -> int:
+        paused_until = self._ai_comment_session_pause_until.get(session_id)
+        if paused_until is None:
+            return 0
+
+        remaining = int(paused_until - self._current_monotonic_time())
+        if remaining <= 0:
+            self._ai_comment_session_pause_until.pop(session_id, None)
+            return 0
+        return remaining
+
+    def _pause_ai_comment_session(self, session_id: str, flood_wait_seconds: int) -> int:
+        pause_seconds = max(1, int(flood_wait_seconds)) + AI_COMMENT_FLOOD_WAIT_PADDING_SECONDS
+        current_pause_until = self._ai_comment_session_pause_until.get(session_id, 0.0)
+        next_pause_until = self._current_monotonic_time() + pause_seconds
+        self._ai_comment_session_pause_until[session_id] = max(current_pause_until, next_pause_until)
+        return pause_seconds
+
+    def _filter_available_ai_comment_sessions(
+        self,
+        session_ids: List[str],
+        *,
+        job_id: str,
+        channel_id: str = "",
+        message_id: Optional[int] = None,
+    ) -> List[str]:
+        available_sessions: List[str] = []
+        for session_id in session_ids:
+            normalized_session_id = str(session_id or "").strip()
+            if not normalized_session_id:
+                continue
+
+            pause_remaining = self._get_ai_comment_session_pause_remaining(normalized_session_id)
+            if pause_remaining > 0:
+                logger.info(
+                    "Пропуск session нейрокомментариев из-за активной паузы: job_id=%s session_id=%s channel=%s message_id=%s pause_remaining=%s",
+                    job_id,
+                    normalized_session_id,
+                    channel_id,
+                    message_id,
+                    pause_remaining,
+                )
+                continue
+
+            available_sessions.append(normalized_session_id)
+
+        return available_sessions
+
+    @classmethod
+    def _format_ai_comment_publish_error(
+        cls,
+        *,
+        error: BaseException,
+        session_id: str,
+        channel_id: str,
+        message_id: int,
+    ) -> str:
+        error_kind = cls._classify_ai_comment_error(error)
+        if error_kind == "flood_wait":
+            wait_seconds = cls._extract_flood_wait_seconds(error)
+            return (
+                f"FloodWait для session '{session_id}' при публикации комментария "
+                f"в канале '{channel_id}' к посту {message_id}: подождите {wait_seconds} сек."
+            )
+        if error_kind == "comments_disabled":
+            return f"У поста {message_id} в канале '{channel_id}' отключены комментарии или нет linked discussion"
+        if error_kind == "account_no_rights":
+            return f"У session '{session_id}' нет прав на публикацию комментария в канале '{channel_id}'"
+        if error_kind == "channel_unavailable":
+            return f"Канал '{channel_id}' недоступен для session '{session_id}'"
+        return f"Не удалось опубликовать комментарий от session '{session_id}': {error}"
+
+    @staticmethod
+    def _record_ai_comment_failure(
+        repo: AiCommentJobsRepo,
+        *,
+        job_id: str,
+        channel_id: str,
+        message_id: int,
+        error_message: str,
+    ) -> None:
+        try:
+            repo.upsert_history_record(
+                job_id=job_id,
+                channel_id=channel_id,
+                message_id=message_id,
+                status="failed",
+                error=error_message,
+            )
+        except Exception as repo_error:
+            logger.error(
+                "Не удалось записать failed-статус в ai_comment_job_posts: job_id=%s channel_id=%s message_id=%s error=%s",
+                job_id,
+                channel_id,
+                message_id,
+                repo_error,
+            )
+
+    @staticmethod
     def _extract_ai_comment_post_text(message: Any) -> str:
         for attr_name in ("raw_text", "message", "text"):
             value = getattr(message, attr_name, None)
@@ -3316,15 +3502,37 @@ class MultiSessionManager:
         return ""
 
     @staticmethod
-    def _normalize_ai_comment_text(text: str, limit: int = 1000) -> str:
-        normalized_lines = [line.strip() for line in str(text or "").splitlines()]
+    def _normalize_ai_comment_text(text: str, limit: int = AI_COMMENT_TEXT_LIMIT) -> str:
+        normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        normalized = normalized.replace("\ufeff", "")
+        normalized = re.sub(r"[\u200b\u200c\u200d]", "", normalized)
+        normalized = normalized.strip()
+        normalized = re.sub(r"^```(?:[\w+-]+)?\s*", "", normalized)
+        normalized = re.sub(r"\s*```$", "", normalized)
+        normalized = re.sub(
+            r"^(?:комментарий|коммент|comment|reply|response|ответ)\s*[:\-]\s*",
+            "",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        normalized_lines = [re.sub(r"[ \t]+", " ", line).strip() for line in normalized.splitlines()]
         normalized = "\n".join(line for line in normalized_lines if line).strip()
+        normalized = normalized.strip("\"'`").strip()
         if len(normalized) <= limit:
             return normalized
-        return normalized[:limit].rstrip()
+
+        truncated = normalized[:limit].rstrip()
+        if "\n" not in truncated:
+            last_space_index = truncated.rfind(" ")
+            if last_space_index >= max(0, limit - 80):
+                truncated = truncated[:last_space_index].rstrip()
+        return truncated.rstrip(" ,;:-")
 
     def _get_ai_comment_session_order(self, job_id: str, session_ids: List[str]) -> List[str]:
-        normalized_session_ids = [session_id for session_id in session_ids if session_id]
+        normalized_session_ids = self._filter_available_ai_comment_sessions(
+            session_ids,
+            job_id=job_id,
+        )
         if not job_id or not normalized_session_ids:
             return normalized_session_ids
 
@@ -3391,31 +3599,40 @@ class MultiSessionManager:
                 )
                 successful_channels += 1
             except FloodWaitError as e:
+                pause_seconds = self._pause_ai_comment_session(
+                    session_id,
+                    self._extract_flood_wait_seconds(e),
+                )
                 logger.warning(
-                    "FloodWait при чтении постов канала: job_id=%s session_id=%s channel=%s wait=%s",
+                    "FloodWait при чтении постов канала: job_id=%s session_id=%s channel=%s wait=%s pause=%s",
                     job_id,
                     session_id,
                     parsed_channel_identifier,
                     e.seconds,
+                    pause_seconds,
                 )
                 failed_channels.append(channel_identifier)
                 continue
             except (ValueError, RPCError) as e:
+                error_kind = self._classify_ai_comment_error(e)
                 logger.warning(
-                    "Не удалось получить посты канала: job_id=%s session_id=%s channel=%s error=%s",
+                    "Не удалось получить посты канала: job_id=%s session_id=%s channel=%s kind=%s error=%s",
                     job_id,
                     session_id,
                     parsed_channel_identifier,
+                    error_kind,
                     e,
                 )
                 failed_channels.append(channel_identifier)
                 continue
             except Exception as e:
+                error_kind = self._classify_ai_comment_error(e)
                 logger.warning(
-                    "Неожиданная ошибка чтения постов канала: job_id=%s session_id=%s channel=%s error=%s",
+                    "Неожиданная ошибка чтения постов канала: job_id=%s session_id=%s channel=%s kind=%s error=%s",
                     job_id,
                     session_id,
                     parsed_channel_identifier,
+                    error_kind,
                     e,
                 )
                 failed_channels.append(channel_identifier)
@@ -3479,7 +3696,12 @@ class MultiSessionManager:
         if isinstance(parsed_channel_identifier, str) and not parsed_channel_identifier.strip():
             return None, None, None, None
 
-        for session_id in session_ids:
+        available_session_ids = self._filter_available_ai_comment_sessions(
+            session_ids,
+            job_id=job_id,
+            channel_id=channel_identifier,
+        )
+        for session_id in available_session_ids:
             try:
                 client = await self.get_client(session_id)
             except Exception as e:
@@ -3495,27 +3717,36 @@ class MultiSessionManager:
                 entity = await client.get_entity(parsed_channel_identifier)
                 return client, entity, session_id, parsed_channel_identifier
             except FloodWaitError as e:
+                pause_seconds = self._pause_ai_comment_session(
+                    session_id,
+                    self._extract_flood_wait_seconds(e),
+                )
                 logger.warning(
-                    "FloodWait при получении entity канала: job_id=%s session_id=%s channel=%s wait=%s",
+                    "FloodWait при получении entity канала: job_id=%s session_id=%s channel=%s wait=%s pause=%s",
                     job_id,
                     session_id,
                     parsed_channel_identifier,
                     e.seconds,
+                    pause_seconds,
                 )
             except (ValueError, RPCError) as e:
+                error_kind = self._classify_ai_comment_error(e)
                 logger.warning(
-                    "Не удалось получить entity канала: job_id=%s session_id=%s channel=%s error=%s",
+                    "Не удалось получить entity канала: job_id=%s session_id=%s channel=%s kind=%s error=%s",
                     job_id,
                     session_id,
                     parsed_channel_identifier,
+                    error_kind,
                     e,
                 )
             except Exception as e:
+                error_kind = self._classify_ai_comment_error(e)
                 logger.warning(
-                    "Неожиданная ошибка получения entity канала: job_id=%s session_id=%s channel=%s error=%s",
+                    "Неожиданная ошибка получения entity канала: job_id=%s session_id=%s channel=%s kind=%s error=%s",
                     job_id,
                     session_id,
                     parsed_channel_identifier,
+                    error_kind,
                     e,
                 )
 
@@ -3585,6 +3816,12 @@ class MultiSessionManager:
         parsed_channel_identifier = self._parse_chat_identifier(channel_id)
         errors: List[str] = []
 
+        if not ordered_session_ids:
+            return {
+                "success": False,
+                "error": "Нет доступных account_sessions: все сессии временно на паузе после FloodWait или невалидны",
+            }
+
         for session_id in ordered_session_ids:
             try:
                 client = await self.get_client(session_id)
@@ -3600,41 +3837,66 @@ class MultiSessionManager:
                     "comment_message_id": getattr(sent_message, "id", None),
                 }
             except FloodWaitError as e:
-                error_message = (
-                    f"FloodWait при публикации комментария от session '{session_id}', "
-                    f"нужно подождать {e.seconds} сек."
+                pause_seconds = self._pause_ai_comment_session(
+                    session_id,
+                    self._extract_flood_wait_seconds(e),
+                )
+                error_message = self._format_ai_comment_publish_error(
+                    error=e,
+                    session_id=session_id,
+                    channel_id=channel_id,
+                    message_id=message_id,
                 )
                 logger.warning(
-                    "FloodWait при публикации нейрокомментария: job_id=%s session_id=%s channel=%s message_id=%s wait=%s",
+                    "FloodWait при публикации нейрокомментария: job_id=%s session_id=%s channel=%s message_id=%s wait=%s pause=%s",
                     job_id,
                     session_id,
                     channel_id,
                     message_id,
                     e.seconds,
+                    pause_seconds,
                 )
                 errors.append(error_message)
             except (ValueError, RPCError) as e:
-                error_message = f"Не удалось опубликовать комментарий от session '{session_id}': {e}"
+                error_kind = self._classify_ai_comment_error(e)
+                error_message = self._format_ai_comment_publish_error(
+                    error=e,
+                    session_id=session_id,
+                    channel_id=channel_id,
+                    message_id=message_id,
+                )
                 logger.warning(
-                    "Не удалось опубликовать нейрокомментарий: job_id=%s session_id=%s channel=%s message_id=%s error=%s",
+                    "Не удалось опубликовать нейрокомментарий: job_id=%s session_id=%s channel=%s message_id=%s kind=%s error=%s",
                     job_id,
                     session_id,
                     channel_id,
                     message_id,
+                    error_kind,
                     e,
                 )
                 errors.append(error_message)
+                if error_kind in {"comments_disabled", "channel_unavailable"}:
+                    break
             except Exception as e:
-                error_message = f"Неожиданная ошибка публикации от session '{session_id}': {e}"
+                error_kind = self._classify_ai_comment_error(e)
+                error_message = self._format_ai_comment_publish_error(
+                    error=e,
+                    session_id=session_id,
+                    channel_id=channel_id,
+                    message_id=message_id,
+                )
                 logger.warning(
-                    "Неожиданная ошибка публикации нейрокомментария: job_id=%s session_id=%s channel=%s message_id=%s error=%s",
+                    "Неожиданная ошибка публикации нейрокомментария: job_id=%s session_id=%s channel=%s message_id=%s kind=%s error=%s",
                     job_id,
                     session_id,
                     channel_id,
                     message_id,
+                    error_kind,
                     e,
                 )
                 errors.append(error_message)
+                if error_kind in {"comments_disabled", "channel_unavailable"}:
+                    break
 
         return {
             "success": False,
@@ -3668,89 +3930,134 @@ class MultiSessionManager:
             channel_id = str(post["channel_id"])
             message_id = int(post["message_id"])
 
-            existing_record = repo.get_history_record(
-                job_id=job_id,
-                channel_id=channel_id,
-                message_id=message_id,
-            )
-            if existing_record is not None:
-                logger.info(
-                    "Пропуск уже обработанного поста нейрокомментариев: job_id=%s channel_id=%s message_id=%s status=%s",
-                    job_id,
-                    channel_id,
-                    message_id,
-                    existing_record.get("status"),
+            try:
+                existing_record = repo.get_history_record(
+                    job_id=job_id,
+                    channel_id=channel_id,
+                    message_id=message_id,
                 )
-                processed_posts.append(
-                    {
-                        "channel_id": channel_id,
-                        "message_id": message_id,
-                        "status": "skipped",
-                    }
-                )
-                continue
+                if existing_record is not None:
+                    logger.info(
+                        "Пропуск уже обработанного поста нейрокомментариев: job_id=%s channel_id=%s message_id=%s status=%s",
+                        job_id,
+                        channel_id,
+                        message_id,
+                        existing_record.get("status"),
+                    )
+                    processed_posts.append(
+                        {
+                            "channel_id": channel_id,
+                            "message_id": message_id,
+                            "status": "skipped",
+                        }
+                    )
+                    continue
 
-            generated_comment = await self.generate_ai_comment_with_fallback(
-                job_id=job_id,
-                channel_id=channel_id,
-                message_id=message_id,
-                system_prompt=str(job.get("system_prompt") or ""),
-                user_prompt=str(job.get("user_prompt") or ""),
-                post_text=str(post.get("post_text") or ""),
-                ai_comment_jobs_repo=repo,
-            )
-            if not generated_comment:
+                generated_comment = await self.generate_ai_comment_with_fallback(
+                    job_id=job_id,
+                    channel_id=channel_id,
+                    message_id=message_id,
+                    system_prompt=str(job.get("system_prompt") or ""),
+                    user_prompt=str(job.get("user_prompt") or ""),
+                    post_text=str(post.get("post_text") or ""),
+                    ai_comment_jobs_repo=repo,
+                )
+                if not generated_comment:
+                    processed_posts.append(
+                        {
+                            "channel_id": channel_id,
+                            "message_id": message_id,
+                            "status": "failed",
+                        }
+                    )
+                    continue
+
+                normalized_comment = self._normalize_ai_comment_text(generated_comment)
+                if not normalized_comment:
+                    error_message = "Сгенерированный комментарий пуст после очистки"
+                    self._record_ai_comment_failure(
+                        repo,
+                        job_id=job_id,
+                        channel_id=channel_id,
+                        message_id=message_id,
+                        error_message=error_message,
+                    )
+                    processed_posts.append(
+                        {
+                            "channel_id": channel_id,
+                            "message_id": message_id,
+                            "status": "failed",
+                            "error": error_message,
+                        }
+                    )
+                    continue
+
+                publish_result = await self._publish_ai_comment(
+                    job_id=job_id,
+                    session_ids=session_ids,
+                    channel_id=channel_id,
+                    message_id=message_id,
+                    comment_text=normalized_comment,
+                )
+
+                if publish_result["success"]:
+                    repo.upsert_history_record(
+                        job_id=job_id,
+                        channel_id=channel_id,
+                        message_id=message_id,
+                        status="posted",
+                        comment_message_id=publish_result.get("comment_message_id"),
+                    )
+                    processed_posts.append(
+                        {
+                            "channel_id": channel_id,
+                            "message_id": message_id,
+                            "status": "posted",
+                            "session_id": publish_result.get("session_id"),
+                            "comment_message_id": publish_result.get("comment_message_id"),
+                        }
+                    )
+                    continue
+
+                self._record_ai_comment_failure(
+                    repo,
+                    job_id=job_id,
+                    channel_id=channel_id,
+                    message_id=message_id,
+                    error_message=publish_result["error"],
+                )
                 processed_posts.append(
                     {
                         "channel_id": channel_id,
                         "message_id": message_id,
                         "status": "failed",
+                        "error": publish_result["error"],
                     }
                 )
-                continue
-
-            publish_result = await self._publish_ai_comment(
-                job_id=job_id,
-                session_ids=session_ids,
-                channel_id=channel_id,
-                message_id=message_id,
-                comment_text=self._normalize_ai_comment_text(generated_comment),
-            )
-
-            if publish_result["success"]:
-                repo.upsert_history_record(
+            except Exception as e:
+                error_message = f"Ошибка обработки поста нейрокомментариев: {e}"
+                logger.exception(
+                    "Неожиданная ошибка обработки поста нейрокомментариев: job_id=%s channel_id=%s message_id=%s error=%s",
+                    job_id,
+                    channel_id,
+                    message_id,
+                    e,
+                )
+                self._record_ai_comment_failure(
+                    repo,
                     job_id=job_id,
                     channel_id=channel_id,
                     message_id=message_id,
-                    status="posted",
-                    comment_message_id=publish_result.get("comment_message_id"),
+                    error_message=error_message,
                 )
                 processed_posts.append(
                     {
                         "channel_id": channel_id,
                         "message_id": message_id,
-                        "status": "posted",
-                        "session_id": publish_result.get("session_id"),
-                        "comment_message_id": publish_result.get("comment_message_id"),
+                        "status": "failed",
+                        "error": error_message,
                     }
                 )
-                continue
-
-            repo.upsert_history_record(
-                job_id=job_id,
-                channel_id=channel_id,
-                message_id=message_id,
-                status="failed",
-                error=publish_result["error"],
-            )
-            processed_posts.append(
-                {
-                    "channel_id": channel_id,
-                    "message_id": message_id,
-                    "status": "failed",
-                    "error": publish_result["error"],
-                }
-            )
 
         if poll_result["successful_channels"] > 0 and not poll_result["failed_channels"]:
             checkpoint_to_store = poll_result["checkpoint_to_store"]
