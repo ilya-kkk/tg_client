@@ -262,7 +262,7 @@ export default function AiCommentingPage() {
   const [modalError, setModalError] = useState<string | null>(null);
 
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
-  const [togglingJobId, setTogglingJobId] = useState<string | null>(null);
+  const [togglingJobIds, setTogglingJobIds] = useState<Set<string>>(new Set());
   const [sessionsLoading, setSessionsLoading] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
@@ -626,19 +626,30 @@ export default function AiCommentingPage() {
 
   async function handleToggle(job: AiCommentJob) {
     if (!userId) {
+      setActionError("Пользователь не определен. Войдите заново.");
       return;
     }
 
+    const nextValue = !job.is_active;
     setActionError(null);
     setNotice(null);
-    setTogglingJobId(job.id);
+    setTogglingJobIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+      nextIds.add(job.id);
+      return nextIds;
+    });
+    setCampaigns((currentCampaigns) =>
+      currentCampaigns.map((campaign) =>
+        campaign.id === job.id ? { ...campaign, is_active: nextValue } : campaign
+      )
+    );
 
     try {
       const updated = await fetchJson<AiCommentJob>(
         `${API_BASE}/users/${userId}/ai-comment-jobs/${job.id}`,
         {
           method: "PATCH",
-          body: JSON.stringify({ is_active: !job.is_active })
+          body: JSON.stringify({ is_active: nextValue })
         }
       );
 
@@ -646,13 +657,22 @@ export default function AiCommentingPage() {
         currentCampaigns.map((campaign) => (campaign.id === job.id ? updated : campaign))
       );
     } catch (error: unknown) {
+      setCampaigns((currentCampaigns) =>
+        currentCampaigns.map((campaign) =>
+          campaign.id === job.id ? { ...campaign, is_active: job.is_active } : campaign
+        )
+      );
       if (error instanceof Error) {
         setActionError(error.message);
       } else {
         setActionError("Не удалось изменить статус кампании");
       }
     } finally {
-      setTogglingJobId(null);
+      setTogglingJobIds((currentIds) => {
+        const nextIds = new Set(currentIds);
+        nextIds.delete(job.id);
+        return nextIds;
+      });
     }
   }
 
@@ -744,7 +764,7 @@ export default function AiCommentingPage() {
         <div className={styles.list}>
           {campaigns.map((job) => {
             const isDeleting = deletingJobId === job.id;
-            const isToggling = togglingJobId === job.id;
+            const isToggling = togglingJobIds.has(job.id);
 
             return (
               <article key={job.id} className={styles.row}>
