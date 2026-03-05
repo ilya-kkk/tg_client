@@ -29,7 +29,7 @@
 | `normal`    | 20–50             | 1 мин                         | 10 мин         |
 | `aggressive`| 60–120            | 15 сек                        | 3 мин          |
 
-- [ ] **Создать файл `app/warmup_config.py`**:
+- [x] **Создать файл `app/warmup_config.py`**:
   - `WARMUP_MODES: dict` — словарь с параметрами каждого режима: `min_delay_sec`, `max_delay_sec`, `actions_per_day_range`.
   - `ACTION_TYPES: list[str]` — список всех доступных типов действий:
     - `'read_messages'` — открыть чат и «прочитать» 3–15 последних сообщений (задержка на каждом)
