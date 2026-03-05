@@ -1,9 +1,24 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type AccountInfo,
+  type AiCommentJob,
+  type AiCommentJobCreateRequest,
+  type AiCommentJobHistoryStatus,
+  type AiCommentJobPost,
+  type ChatsResponse,
+  createAiCommentJob,
+  deleteAiCommentJob,
+  getAiCommentJobHistory,
+  getSessionAccount,
+  listAiCommentJobs,
+  listSessionChats,
+  listSessions,
+  updateAiCommentJob
+} from "./api";
 import styles from "./ai-commenting.module.css";
 
-const API_BASE = "http://localhost:8000";
 const STORAGE_USER_ID_KEY = "tg_client_user_id";
 const CHATS_FETCH_LIMIT = 1000;
 const SKELETON_ITEMS = 4;
@@ -13,75 +28,6 @@ const DEFAULT_SYSTEM_PROMPT = [
   "Не придумывай факты, которых нет в посте.",
   "Верни только готовый текст комментария без кавычек, markdown и пояснений."
 ].join("\n");
-
-interface AiCommentJob {
-  id: string;
-  user_id: string;
-  name: string;
-  account_sessions: string[];
-  target_channels: string[];
-  user_prompt: string;
-  system_prompt: string;
-  is_active: boolean;
-  last_checked_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-type AiCommentJobHistoryStatus = "posted" | "skipped" | "failed";
-
-interface AiCommentJobPost {
-  channel_id: string;
-  message_id: number;
-  comment_message_id: number | null;
-  status: AiCommentJobHistoryStatus;
-  error: string | null;
-  created_at: string;
-}
-
-interface ApiErrorResponse {
-  detail?: string;
-  message?: string;
-}
-
-interface DeleteResponse {
-  success: boolean;
-}
-
-interface SessionInfo {
-  session_id: string;
-  phone: string | null;
-  is_authorized: boolean;
-}
-
-interface SessionsResponse {
-  success: boolean;
-  sessions: SessionInfo[];
-  total: number;
-}
-
-interface AccountInfo {
-  first_name: string | null;
-  phone: string | null;
-}
-
-interface AccountInfoResponse {
-  success: boolean;
-  account: AccountInfo;
-}
-
-interface ChatInfo {
-  id: number;
-  name: string;
-  type: string | null;
-  username: string | null;
-}
-
-interface ChatsResponse {
-  success: boolean;
-  chats: ChatInfo[];
-  total: number;
-}
 
 interface SessionOption {
   session_id: string;
@@ -93,42 +39,12 @@ interface ChannelOption {
   label: string;
 }
 
-interface AiCommentJobPayload {
-  name: string;
-  account_sessions: string[];
-  target_channels: string[];
-  user_prompt: string;
-  system_prompt: string;
-}
-
 interface JobFormState {
   name: string;
   account_sessions: string[];
   target_channels: string[];
   user_prompt: string;
   system_prompt: string;
-}
-
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const response = await fetch(url, {
-    ...init,
-    headers,
-    cache: "no-store"
-  });
-
-  if (!response.ok) {
-    const errorBody = (await response.json().catch(() => null)) as ApiErrorResponse | null;
-    const message =
-      errorBody?.detail ?? errorBody?.message ?? `Ошибка запроса (${response.status})`;
-    throw new Error(message);
-  }
-
-  return (await response.json()) as T;
 }
 
 function createInitialForm(): JobFormState {
@@ -376,9 +292,7 @@ export default function AiCommentingPage() {
     setLoadError(null);
 
     try {
-      const response = await fetchJson<AiCommentJob[]>(
-        `${API_BASE}/users/${targetUserId}/ai-comment-jobs`
-      );
+      const response = await listAiCommentJobs(targetUserId);
       setCampaigns(response);
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -396,14 +310,12 @@ export default function AiCommentingPage() {
     setSessionsError(null);
 
     try {
-      const response = await fetchJson<SessionsResponse>(`${API_BASE}/sessions`);
+      const response = await listSessions();
       const authorizedSessions = response.sessions.filter((session) => session.is_authorized);
 
       const results = await Promise.allSettled(
         authorizedSessions.map(async (session): Promise<SessionOption> => {
-          const info = await fetchJson<AccountInfoResponse>(
-            `${API_BASE}/sessions/${session.session_id}/account/me`
-          );
+          const info = await getSessionAccount(session.session_id);
 
           return {
             session_id: session.session_id,
@@ -470,9 +382,7 @@ export default function AiCommentingPage() {
 
       try {
         const settled = await Promise.allSettled(
-          form.account_sessions.map((sessionId) =>
-            fetchJson<ChatsResponse>(`${API_BASE}/sessions/${sessionId}/chats?limit=${CHATS_FETCH_LIMIT}`)
-          )
+          form.account_sessions.map((sessionId) => listSessionChats(sessionId, CHATS_FETCH_LIMIT))
         );
 
         if (cancelled) {
@@ -628,9 +538,7 @@ export default function AiCommentingPage() {
       }
 
       try {
-        const response = await fetchJson<AiCommentJobPost[]>(
-          `${API_BASE}/users/${userId}/ai-comment-jobs/${job.id}/history`
-        );
+        const response = await getAiCommentJobHistory(userId, job.id);
 
         if (historyRequestIdRef.current !== requestId) {
           return;
@@ -706,7 +614,7 @@ export default function AiCommentingPage() {
     setNotice(null);
 
     try {
-      const payload: AiCommentJobPayload = {
+      const payload: AiCommentJobCreateRequest = {
         name: normalizedName,
         account_sessions: normalizedSessions,
         target_channels: normalizedChannels,
@@ -715,23 +623,14 @@ export default function AiCommentingPage() {
       };
 
       if (editingJob) {
-        const updated = await fetchJson<AiCommentJob>(
-          `${API_BASE}/users/${userId}/ai-comment-jobs/${editingJob.id}`,
-          {
-            method: "PATCH",
-            body: JSON.stringify(payload)
-          }
-        );
+        const updated = await updateAiCommentJob(userId, editingJob.id, payload);
 
         setCampaigns((currentCampaigns) =>
           currentCampaigns.map((campaign) => (campaign.id === updated.id ? updated : campaign))
         );
         setNotice(`Кампания «${updated.name}» обновлена.`);
       } else {
-        const created = await fetchJson<AiCommentJob>(`${API_BASE}/users/${userId}/ai-comment-jobs`, {
-          method: "POST",
-          body: JSON.stringify(payload)
-        });
+        const created = await createAiCommentJob(userId, payload);
 
         setCampaigns((currentCampaigns) => [...currentCampaigns, created]);
         setNotice(`Кампания «${created.name}» создана.`);
@@ -794,13 +693,7 @@ export default function AiCommentingPage() {
     );
 
     try {
-      const updated = await fetchJson<AiCommentJob>(
-        `${API_BASE}/users/${userId}/ai-comment-jobs/${job.id}`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ is_active: nextValue })
-        }
-      );
+      const updated = await updateAiCommentJob(userId, job.id, { is_active: nextValue });
 
       setCampaigns((currentCampaigns) =>
         currentCampaigns.map((campaign) => (campaign.id === job.id ? updated : campaign))
@@ -841,9 +734,7 @@ export default function AiCommentingPage() {
     setDeletingJobId(job.id);
 
     try {
-      await fetchJson<DeleteResponse>(`${API_BASE}/users/${userId}/ai-comment-jobs/${job.id}`, {
-        method: "DELETE"
-      });
+      await deleteAiCommentJob(userId, job.id);
 
       setCampaigns((currentCampaigns) =>
         currentCampaigns.filter((campaign) => campaign.id !== job.id)

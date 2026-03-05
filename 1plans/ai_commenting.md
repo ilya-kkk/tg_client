@@ -92,5 +92,5 @@
   - откатывать состояние при ошибке.
 - [x] **Реализовать удаление** с диалогом подтверждения (`window.confirm` или кастомный модал).
 - [x] **Добавить просмотр истории** в UI (drawer/модал): последние комментарии, статусы и ошибки по кампании.
-- [ ] **Типизировать все API-ответы** через TypeScript `interface AiCommentJob { ... }` и `interface AiCommentJobPost { ... }`.
+- [x] **Типизировать все API-ответы** через TypeScript `interface AiCommentJob { ... }` и `interface AiCommentJobPost { ... }`.
 .
