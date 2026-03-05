@@ -4,7 +4,7 @@
 
 ### 1. Модель данных (таблица `ai_comment_jobs`)
 
-- [x] **Создать таблицу `ai_comment_jobs` в Supabase** со следующими полями:
+- [ ] **Создать таблицу `ai_comment_jobs` в Supabase** со следующими полями:
   - `id` (uuid, PK, default gen_random_uuid())
   - `user_id` (uuid, FK → users.id, NOT NULL)
   - `name` (text, NOT NULL) — название кампании
@@ -16,7 +16,7 @@
   - `last_checked_at` (timestamptz, NULL) — отметка последней проверки новых постов
   - `created_at` (timestamptz, default now())
   - `updated_at` (timestamptz, default now())
-- [x] **Создать таблицу `ai_comment_job_posts` в Supabase** для идемпотентности (чтобы не комментировать один пост дважды):
+- [ ] **Создать таблицу `ai_comment_job_posts` в Supabase** для идемпотентности (чтобы не комментировать один пост дважды):
   - `id` (uuid, PK, default gen_random_uuid())
   - `job_id` (uuid, FK → ai_comment_jobs.id, NOT NULL)
   - `channel_id` (text, NOT NULL)
