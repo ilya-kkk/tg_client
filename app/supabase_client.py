@@ -325,6 +325,42 @@ class AiCommentJobsRepo:
         )
         return response.data or []
 
+    def upsert_history_record(
+        self,
+        *,
+        job_id: str,
+        channel_id: str,
+        message_id: int,
+        status: str,
+        error: Optional[str] = None,
+        comment_message_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        normalized_job_id = str(job_id or "").strip()
+        normalized_channel_id = str(channel_id or "").strip()
+        if not normalized_job_id:
+            raise ValueError("job_id не может быть пустым")
+        if not normalized_channel_id:
+            raise ValueError("channel_id не может быть пустым")
+
+        payload: Dict[str, Any] = {
+            "job_id": normalized_job_id,
+            "channel_id": normalized_channel_id,
+            "message_id": int(message_id),
+            "status": str(status or "").strip(),
+            "error": (error or None),
+        }
+        if comment_message_id is not None:
+            payload["comment_message_id"] = int(comment_message_id)
+
+        response = (
+            self.client.table("ai_comment_job_posts")
+            .upsert(payload, on_conflict="job_id,channel_id,message_id")
+            .execute()
+        )
+        if response.data:
+            return response.data[0]
+        return payload
+
 
 class WarmupJobsRepo:
     """Репозиторий кампаний прогрева."""

@@ -28,8 +28,9 @@ from telethon.tl.types import (
     DocumentAttributeAudio,
     DocumentAttributeSticker,
 )
+from app.ai_client import OpenRouterClient
 from app.config import API_ID, API_HASH
-from app.supabase_client import SessionRepo
+from app.supabase_client import AiCommentJobsRepo, SessionRepo
 
 AUTH_REQUEST_TIMEOUT_SECONDS = 30
 POPULAR_REACTIONS: List[str] = ["👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "💯", "🎉"]
@@ -51,9 +52,11 @@ class MultiSessionManager:
         self,
         session_repo: Optional[SessionRepo] = None,
         default_session_id: str = "default",
+        openrouter_client: Optional[OpenRouterClient] = None,
     ):
         self.session_repo = session_repo
         self.default_session_id = default_session_id
+        self.openrouter_client = openrouter_client or OpenRouterClient()
         self._clients: Dict[str, TelegramClient] = {}
         self._auth_clients: Dict[str, TelegramClient] = {}
         self._authorized_sessions: set[str] = set()
@@ -3267,6 +3270,70 @@ class MultiSessionManager:
         if re.fullmatch(r"-?\d+", normalized):
             return int(normalized)
         return normalized
+
+    async def generate_ai_comment_with_fallback(
+        self,
+        *,
+        job_id: str,
+        channel_id: str,
+        message_id: int,
+        system_prompt: str,
+        user_prompt: str,
+        post_text: str,
+        ai_comment_jobs_repo: Optional[AiCommentJobsRepo] = None,
+        fallback_models: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """
+        Генерирует комментарий через OpenRouter с fallback по моделям.
+        Если ни одна модель не дала валидный ответ, фиксирует статус failed в истории.
+        """
+        try:
+            generated = await self.openrouter_client.generate_comment_with_fallback(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                post_text=post_text,
+                models=fallback_models,
+            )
+        except Exception as e:
+            logger.exception(
+                "Неожиданная ошибка генерации комментария: job_id=%s channel_id=%s message_id=%s error=%s",
+                job_id,
+                channel_id,
+                message_id,
+                e,
+            )
+            generated = None
+
+        if generated:
+            return generated
+
+        error_message = "Не удалось сгенерировать комментарий: все fallback-модели вернули ошибку или пустой ответ"
+        logger.warning(
+            "Генерация комментария не удалась: job_id=%s channel_id=%s message_id=%s",
+            job_id,
+            channel_id,
+            message_id,
+        )
+
+        if ai_comment_jobs_repo is not None:
+            try:
+                ai_comment_jobs_repo.upsert_history_record(
+                    job_id=job_id,
+                    channel_id=channel_id,
+                    message_id=message_id,
+                    status="failed",
+                    error=error_message,
+                )
+            except Exception as e:
+                logger.error(
+                    "Не удалось записать failed-статус в ai_comment_job_posts: job_id=%s channel_id=%s message_id=%s error=%s",
+                    job_id,
+                    channel_id,
+                    message_id,
+                    e,
+                )
+
+        return None
 
     def _build_reaction_job_signature(self, job: Dict[str, Any]) -> str:
         session_part = ",".join(sorted(job.get("account_sessions") or []))

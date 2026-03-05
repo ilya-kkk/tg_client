@@ -16,6 +16,9 @@ PROXY_URL = os.getenv("PROXY_URL", None)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
+# OpenRouter
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+
 
 def _parse_cors_origins(raw_value: str | None) -> list[str]:
     """Парсит CORS origins из строки вида 'http://a,http://b'."""

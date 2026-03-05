@@ -43,7 +43,7 @@
 - [x] **Добавить эндпоинт `PATCH /users/{user_id}/ai-comment-jobs/{job_id}`** — обновление кампании (редактирование или переключение `is_active`), принимает `AiCommentJobUpdate`, возвращает `AiCommentJobOut`
 - [x] **Добавить эндпоинт `DELETE /users/{user_id}/ai-comment-jobs/{job_id}`** — удаление кампании, возвращает `{ "success": true }`
 - [x] **Добавить эндпоинт `GET /users/{user_id}/ai-comment-jobs/{job_id}/history`** — история комментариев/ошибок по кампании, возвращает `list[AiCommentJobPostOut]`
-- [ ] **Добавить сервис OpenRouter** в `app/telegram_client.py` или отдельный модуль `app/ai_client.py`:
+- [x] **Добавить сервис OpenRouter** в `app/telegram_client.py` или отдельный модуль `app/ai_client.py`:
   - использовать `OPENROUTER_API_KEY` из `.env`;
   - задать список бесплатных моделей (например: `["meta-llama/llama-3.1-8b-instruct:free", "qwen/qwen-2.5-7b-instruct:free", "google/gemma-2-9b-it:free"]`);
   - реализовать `generate_comment_with_fallback(...)` с перебором моделей до получения валидного непустого ответа;
@@ -52,7 +52,7 @@
 
 ### 3. Backend: фоновый воркер нейрокомментариев
 
-- [x] **Добавить фоновый планировщик** (APScheduler или asyncio-таск) в `app/main.py`:
+- [ ] **Добавить фоновый планировщик** (APScheduler или asyncio-таск) в `app/main.py`:
   - при старте приложения запускать цикл мониторинга активных кампаний;
   - раз в минуту выбирать из Supabase все записи `ai_comment_jobs`, где `is_active = true`;
   - для каждой кампании проверять новые посты в `target_channels` после `last_checked_at`.
@@ -93,3 +93,4 @@
 - [ ] **Реализовать удаление** с диалогом подтверждения (`window.confirm` или кастомный модал).
 - [ ] **Добавить просмотр истории** в UI (drawer/модал): последние комментарии, статусы и ошибки по кампании.
 - [ ] **Типизировать все API-ответы** через TypeScript `interface AiCommentJob { ... }` и `interface AiCommentJobPost { ... }`.
+.
