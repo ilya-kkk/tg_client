@@ -3541,6 +3541,24 @@ class MultiSessionManager:
         self._ai_comment_job_round_robin_indexes[job_id] = (start_index + 1) % len(normalized_session_ids)
         return ordered_sessions
 
+    def _clear_ai_comment_job_runtime_state(self, job_id: str) -> None:
+        self._ai_comment_job_round_robin_indexes.pop(job_id, None)
+
+    def _refresh_ai_comment_job(self, repo: AiCommentJobsRepo, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        job_id = str(job.get("id") or "").strip()
+        if not job_id:
+            return None
+
+        try:
+            return repo.get_by_id_for_worker(job_id)
+        except Exception as e:
+            logger.warning(
+                "Не удалось перечитать состояние кампании нейрокомментариев, продолжаем с текущим снимком: job_id=%s error=%s",
+                job_id,
+                e,
+            )
+            return job
+
     async def _collect_ai_comment_job_fresh_posts(
         self,
         job: Dict[str, Any],
@@ -3909,28 +3927,62 @@ class MultiSessionManager:
         *,
         ai_comment_jobs_repo: Optional[AiCommentJobsRepo] = None,
     ) -> List[Dict[str, Any]]:
+        repo = ai_comment_jobs_repo or AiCommentJobsRepo()
+        current_job = self._refresh_ai_comment_job(repo, job)
+        if current_job is None:
+            self._clear_ai_comment_job_runtime_state(str(job.get("id") or "").strip())
+            return []
+        if current_job is not job:
+            job.clear()
+            job.update(current_job)
+
         job_id = str(job.get("id") or "").strip()
         if not job_id or not bool(job.get("is_active")):
+            self._clear_ai_comment_job_runtime_state(job_id)
             return []
 
-        repo = ai_comment_jobs_repo or AiCommentJobsRepo()
         session_ids = self._normalize_string_list(job.get("account_sessions"))
         if not session_ids:
             logger.warning(
                 "Пропуск обработки нейрокомментариев: job_id=%s отсутствуют account_sessions",
                 job_id,
             )
+            self._clear_ai_comment_job_runtime_state(job_id)
             return []
 
         poll_result = await self._collect_ai_comment_job_fresh_posts(job)
         fresh_posts = poll_result["fresh_posts"]
         processed_posts: List[Dict[str, Any]] = []
+        stopped_early = False
 
         for post in fresh_posts:
             channel_id = str(post["channel_id"])
             message_id = int(post["message_id"])
 
             try:
+                current_job = self._refresh_ai_comment_job(repo, job)
+                if current_job is None or not bool(current_job.get("is_active")):
+                    logger.info(
+                        "Останавливаем обработку кампании нейрокомментариев в текущем минутном цикле: job_id=%s",
+                        job_id,
+                    )
+                    self._clear_ai_comment_job_runtime_state(job_id)
+                    stopped_early = True
+                    break
+
+                if current_job is not job:
+                    job.clear()
+                    job.update(current_job)
+                session_ids = self._normalize_string_list(job.get("account_sessions"))
+                if not session_ids:
+                    logger.warning(
+                        "Останавливаем обработку нейрокомментариев: job_id=%s после обновления пропали account_sessions",
+                        job_id,
+                    )
+                    self._clear_ai_comment_job_runtime_state(job_id)
+                    stopped_early = True
+                    break
+
                 existing_record = repo.get_history_record(
                     job_id=job_id,
                     channel_id=channel_id,
@@ -4058,6 +4110,9 @@ class MultiSessionManager:
                         "error": error_message,
                     }
                 )
+
+        if stopped_early:
+            return processed_posts
 
         if poll_result["successful_channels"] > 0 and not poll_result["failed_channels"]:
             checkpoint_to_store = poll_result["checkpoint_to_store"]

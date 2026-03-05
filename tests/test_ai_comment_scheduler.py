@@ -209,6 +209,27 @@ class FakeAiCommentJobsRepo:
     def __init__(self):
         self.calls = []
         self.history_records = {}
+        self.jobs = {}
+
+    def set_job(self, job: dict):
+        normalized_job = dict(job)
+        job_id = str(normalized_job.get("id") or "").strip()
+        if job_id:
+            self.jobs[job_id] = normalized_job
+        return normalized_job
+
+    def update_job(self, job_id: str, **changes):
+        normalized_job_id = str(job_id or "").strip()
+        current_job = dict(self.jobs.get(normalized_job_id) or {"id": normalized_job_id})
+        current_job.update(changes)
+        self.jobs[normalized_job_id] = current_job
+        return current_job
+
+    def get_by_id_for_worker(self, job_id: str):
+        job = self.jobs.get(str(job_id or "").strip())
+        if job is None:
+            return None
+        return dict(job)
 
     def update_last_checked_at(self, job_id: str, last_checked_at: str):
         self.calls.append(
@@ -217,6 +238,8 @@ class FakeAiCommentJobsRepo:
                 "last_checked_at": last_checked_at,
             }
         )
+        if job_id in self.jobs:
+            self.jobs[job_id]["last_checked_at"] = last_checked_at
         return {
             "id": job_id,
             "last_checked_at": last_checked_at,
@@ -322,6 +345,39 @@ class FailingGenerationManager(TestMultiSessionManager):
             ai_comment_jobs_repo=ai_comment_jobs_repo,
             fallback_models=fallback_models,
         )
+
+
+class DeactivatingGenerationManager(TestMultiSessionManager):
+    def __init__(self, clients_by_session, repo: FakeAiCommentJobsRepo, deactivate_after_message_id: int):
+        super().__init__(clients_by_session)
+        self.repo = repo
+        self.deactivate_after_message_id = deactivate_after_message_id
+
+    async def generate_ai_comment_with_fallback(
+        self,
+        *,
+        job_id: str,
+        channel_id: str,
+        message_id: int,
+        system_prompt: str,
+        user_prompt: str,
+        post_text: str,
+        ai_comment_jobs_repo=None,
+        fallback_models=None,
+    ):
+        generated = await super().generate_ai_comment_with_fallback(
+            job_id=job_id,
+            channel_id=channel_id,
+            message_id=message_id,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            post_text=post_text,
+            ai_comment_jobs_repo=ai_comment_jobs_repo,
+            fallback_models=fallback_models,
+        )
+        if message_id == self.deactivate_after_message_id:
+            self.repo.update_job(job_id, is_active=False)
+        return generated
 
 
 class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
@@ -472,6 +528,7 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "user_prompt": "user",
             "last_checked_at": "2026-03-05T14:00:00+00:00",
         }
+        repo.set_job(job)
 
         processed_posts = await manager.process_ai_comment_jobs(
             job,
@@ -599,6 +656,7 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "user_prompt": "user",
             "last_checked_at": "2026-03-05T15:00:00+00:00",
         }
+        repo.set_job(job)
 
         processed_posts = await manager.process_ai_comment_jobs(
             job,
@@ -648,6 +706,7 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "user_prompt": "user",
             "last_checked_at": "2026-03-05T16:00:00+00:00",
         }
+        repo.set_job(job)
 
         processed_posts = await manager.process_ai_comment_jobs(
             job,
@@ -702,6 +761,7 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "user_prompt": "user",
             "last_checked_at": "2026-03-05T17:00:00+00:00",
         }
+        repo.set_job(job)
 
         processed_posts = await manager.process_ai_comment_jobs(
             job,
@@ -747,6 +807,7 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "user_prompt": "user",
             "last_checked_at": "2026-03-05T18:00:00+00:00",
         }
+        repo.set_job(job)
 
         processed_posts = await manager.process_ai_comment_jobs(
             job,
@@ -785,6 +846,7 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "user_prompt": "user",
             "last_checked_at": "2026-03-05T19:00:00+00:00",
         }
+        repo.set_job(job)
 
         processed_posts = await manager.process_ai_comment_jobs(
             job,
@@ -799,6 +861,113 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
             repo.history_records[("job-9", "@channel_eight", 901)]["status"],
             "failed",
         )
+
+    async def test_process_posts_skips_cycle_when_job_was_disabled_before_processing(self):
+        repo = FakeAiCommentJobsRepo()
+        session_a_client = FakeClient(
+            messages_by_entity={
+                "@channel_toggle": [
+                    FakeMessage(1001, datetime(2026, 3, 5, 20, 5, tzinfo=timezone.utc), "first post"),
+                ]
+            }
+        )
+        manager = TestMultiSessionManager({"session-a": session_a_client})
+        manager.generated_comments = {1001: "must not be used"}
+        job = {
+            "id": "job-10",
+            "is_active": True,
+            "account_sessions": ["session-a"],
+            "target_channels": ["@channel_toggle"],
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "last_checked_at": "2026-03-05T20:00:00+00:00",
+        }
+        repo.set_job({**job, "is_active": False})
+
+        processed_posts = await manager.process_ai_comment_jobs(
+            job,
+            ai_comment_jobs_repo=repo,
+        )
+
+        self.assertEqual(processed_posts, [])
+        self.assertEqual(manager.generated_calls, [])
+        self.assertEqual(session_a_client.sent_messages, [])
+        self.assertEqual(repo.calls, [])
+        self.assertEqual(job["last_checked_at"], "2026-03-05T20:00:00+00:00")
+
+    async def test_process_posts_stops_after_current_post_when_job_is_disabled_mid_cycle(self):
+        repo = FakeAiCommentJobsRepo()
+        session_a_client = FakeClient(
+            messages_by_entity={
+                "@channel_toggle_mid_cycle": [
+                    FakeMessage(1102, datetime(2026, 3, 5, 21, 6, tzinfo=timezone.utc), "second post"),
+                    FakeMessage(1101, datetime(2026, 3, 5, 21, 5, tzinfo=timezone.utc), "first post"),
+                ]
+            }
+        )
+        manager = DeactivatingGenerationManager(
+            {"session-a": session_a_client},
+            repo=repo,
+            deactivate_after_message_id=1101,
+        )
+        manager.generated_comments = {
+            1101: "first comment",
+            1102: "second comment",
+        }
+        job = {
+            "id": "job-11",
+            "is_active": True,
+            "account_sessions": ["session-a"],
+            "target_channels": ["@channel_toggle_mid_cycle"],
+            "system_prompt": "system",
+            "user_prompt": "user",
+            "last_checked_at": "2026-03-05T21:00:00+00:00",
+        }
+        repo.set_job(job)
+
+        processed_posts = await manager.process_ai_comment_jobs(
+            job,
+            ai_comment_jobs_repo=repo,
+        )
+
+        self.assertEqual(
+            processed_posts,
+            [
+                {
+                    "channel_id": "@channel_toggle_mid_cycle",
+                    "message_id": 1101,
+                    "status": "posted",
+                    "session_id": "session-a",
+                    "comment_message_id": 1000,
+                }
+            ],
+        )
+        self.assertEqual(
+            manager.generated_calls,
+            [
+                {
+                    "job_id": "job-11",
+                    "channel_id": "@channel_toggle_mid_cycle",
+                    "message_id": 1101,
+                    "system_prompt": "system",
+                    "user_prompt": "user",
+                    "post_text": "first post",
+                }
+            ],
+        )
+        self.assertEqual(
+            session_a_client.sent_messages,
+            [
+                {
+                    "entity": "@channel_toggle_mid_cycle",
+                    "message": "first comment",
+                    "comment_to": 1101,
+                    "sent_message_id": 1000,
+                }
+            ],
+        )
+        self.assertEqual(repo.calls, [])
+        self.assertEqual(job["last_checked_at"], "2026-03-05T21:00:00+00:00")
 
     def test_normalize_ai_comment_text_cleans_wrappers_and_truncates(self):
         cleaned = MultiSessionManager._normalize_ai_comment_text(
