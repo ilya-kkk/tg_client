@@ -1,11 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import styles from "./ai-commenting.module.css";
 
 const API_BASE = "http://localhost:8000";
 const STORAGE_USER_ID_KEY = "tg_client_user_id";
+const CHATS_FETCH_LIMIT = 1000;
 const SKELETON_ITEMS = 4;
+const DEFAULT_SYSTEM_PROMPT = [
+  "Ты пишешь краткий и естественный комментарий к посту в Telegram.",
+  "Пиши по делу, без воды, без канцелярита и без упоминаний, что ты ИИ.",
+  "Не придумывай факты, которых нет в посте.",
+  "Верни только готовый текст комментария без кавычек, markdown и пояснений."
+].join("\n");
 
 interface AiCommentJob {
   id: string;
@@ -30,6 +37,67 @@ interface DeleteResponse {
   success: boolean;
 }
 
+interface SessionInfo {
+  session_id: string;
+  phone: string | null;
+  is_authorized: boolean;
+}
+
+interface SessionsResponse {
+  success: boolean;
+  sessions: SessionInfo[];
+  total: number;
+}
+
+interface AccountInfo {
+  first_name: string | null;
+  phone: string | null;
+}
+
+interface AccountInfoResponse {
+  success: boolean;
+  account: AccountInfo;
+}
+
+interface ChatInfo {
+  id: number;
+  name: string;
+  type: string | null;
+  username: string | null;
+}
+
+interface ChatsResponse {
+  success: boolean;
+  chats: ChatInfo[];
+  total: number;
+}
+
+interface SessionOption {
+  session_id: string;
+  label: string;
+}
+
+interface ChannelOption {
+  value: string;
+  label: string;
+}
+
+interface AiCommentJobPayload {
+  name: string;
+  account_sessions: string[];
+  target_channels: string[];
+  user_prompt: string;
+  system_prompt: string;
+}
+
+interface JobFormState {
+  name: string;
+  account_sessions: string[];
+  target_channels: string[];
+  user_prompt: string;
+  system_prompt: string;
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) {
@@ -50,6 +118,88 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+function createInitialForm(): JobFormState {
+  return {
+    name: "",
+    account_sessions: [],
+    target_channels: [],
+    user_prompt: "",
+    system_prompt: DEFAULT_SYSTEM_PROMPT
+  };
+}
+
+function toForm(job: AiCommentJob): JobFormState {
+  return {
+    name: job.name,
+    account_sessions: [...job.account_sessions],
+    target_channels: [...job.target_channels],
+    user_prompt: job.user_prompt,
+    system_prompt: job.system_prompt
+  };
+}
+
+function buildAccountLabel(
+  account: AccountInfo | null,
+  fallbackPhone: string | null,
+  sessionId: string
+): string {
+  const firstName = account?.first_name?.trim();
+  if (firstName) {
+    return firstName;
+  }
+
+  const phone = account?.phone?.trim() || fallbackPhone?.trim();
+  if (phone) {
+    return phone;
+  }
+
+  return sessionId;
+}
+
+function mergeSessionOptions(options: SessionOption[], selectedSessionIds: string[]): SessionOption[] {
+  const merged = new Map<string, SessionOption>();
+
+  for (const option of options) {
+    merged.set(option.session_id, option);
+  }
+
+  for (const sessionId of selectedSessionIds) {
+    if (!merged.has(sessionId)) {
+      merged.set(sessionId, {
+        session_id: sessionId,
+        label: `${sessionId} (неактивная сессия)`
+      });
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function mergeChannelOptions(options: ChannelOption[], selectedChannels: string[]): ChannelOption[] {
+  const merged = new Map<string, ChannelOption>();
+
+  for (const option of options) {
+    merged.set(option.value.toLowerCase(), option);
+  }
+
+  for (const channel of selectedChannels) {
+    const normalized = channel.trim();
+    if (!normalized) {
+      continue;
+    }
+
+    const key = normalized.toLowerCase();
+    if (!merged.has(key)) {
+      merged.set(key, {
+        value: normalized,
+        label: `${normalized} (сохраненный канал)`
+      });
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => left.label.localeCompare(right.label));
 }
 
 function EditIcon() {
@@ -102,14 +252,25 @@ export default function AiCommentingPage() {
   const [userId, setUserId] = useState<string>("");
   const [userIdResolved, setUserIdResolved] = useState<boolean>(false);
   const [campaigns, setCampaigns] = useState<AiCommentJob[]>([]);
+  const [sessions, setSessions] = useState<SessionOption[]>([]);
 
   const [loading, setLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
 
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [togglingJobId, setTogglingJobId] = useState<string | null>(null);
+  const [sessionsLoading, setSessionsLoading] = useState<boolean>(false);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
+  const [editingJob, setEditingJob] = useState<AiCommentJob | null>(null);
+  const [form, setForm] = useState<JobFormState>(createInitialForm);
+  const [availableChannels, setAvailableChannels] = useState<ChannelOption[]>([]);
+  const [loadingChannels, setLoadingChannels] = useState<boolean>(false);
+  const [channelsError, setChannelsError] = useState<string | null>(null);
 
   useEffect(() => {
     const savedUserId = window.localStorage.getItem(STORAGE_USER_ID_KEY);
@@ -146,12 +307,322 @@ export default function AiCommentingPage() {
     }
   }, []);
 
+  const loadSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    setSessionsError(null);
+
+    try {
+      const response = await fetchJson<SessionsResponse>(`${API_BASE}/sessions`);
+      const authorizedSessions = response.sessions.filter((session) => session.is_authorized);
+
+      const results = await Promise.allSettled(
+        authorizedSessions.map(async (session): Promise<SessionOption> => {
+          const info = await fetchJson<AccountInfoResponse>(
+            `${API_BASE}/sessions/${session.session_id}/account/me`
+          );
+
+          return {
+            session_id: session.session_id,
+            label: buildAccountLabel(info.account, session.phone, session.session_id)
+          };
+        })
+      );
+
+      const options = results
+        .map((result, index) => {
+          const session = authorizedSessions[index];
+          if (result.status === "fulfilled") {
+            return result.value;
+          }
+
+          return {
+            session_id: session.session_id,
+            label: buildAccountLabel(null, session.phone, session.session_id)
+          };
+        })
+        .sort((left, right) => left.label.localeCompare(right.label));
+
+      setSessions(options);
+    } catch (error: unknown) {
+      setSessions([]);
+      if (error instanceof Error) {
+        setSessionsError(error.message);
+      } else {
+        setSessionsError("Не удалось загрузить активные сессии");
+      }
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!userIdResolved) {
       return;
     }
     void loadCampaigns(userId);
   }, [loadCampaigns, userId, userIdResolved]);
+
+  useEffect(() => {
+    void loadSessions();
+  }, [loadSessions]);
+
+  useEffect(() => {
+    if (!isModalOpen) {
+      return;
+    }
+
+    if (form.account_sessions.length === 0) {
+      setAvailableChannels([]);
+      setChannelsError(null);
+      setLoadingChannels(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadChannelsForSelectedAccounts() {
+      setLoadingChannels(true);
+      setChannelsError(null);
+
+      try {
+        const settled = await Promise.allSettled(
+          form.account_sessions.map((sessionId) =>
+            fetchJson<ChatsResponse>(`${API_BASE}/sessions/${sessionId}/chats?limit=${CHATS_FETCH_LIMIT}`)
+          )
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        const successfulResponses = settled.filter(
+          (entry): entry is PromiseFulfilledResult<ChatsResponse> => entry.status === "fulfilled"
+        );
+
+        if (successfulResponses.length === 0) {
+          const firstError = settled.find(
+            (entry): entry is PromiseRejectedResult => entry.status === "rejected"
+          );
+          throw new Error(
+            firstError?.reason instanceof Error
+              ? firstError.reason.message
+              : "Не удалось загрузить каналы выбранных аккаунтов"
+          );
+        }
+
+        const nextOptions = new Map<string, ChannelOption>();
+        for (const response of successfulResponses) {
+          for (const chat of response.value.chats) {
+            if (chat.type !== "channel") {
+              continue;
+            }
+
+            const value = chat.username ? `@${chat.username}` : String(chat.id);
+            const normalizedValue = value.trim();
+            if (!normalizedValue) {
+              continue;
+            }
+
+            const key = normalizedValue.toLowerCase();
+            if (nextOptions.has(key)) {
+              continue;
+            }
+
+            const safeName = chat.name?.trim() ? chat.name.trim() : normalizedValue;
+            const label = chat.username
+              ? `${safeName} (${normalizedValue})`
+              : `${safeName} (id: ${chat.id})`;
+
+            nextOptions.set(key, {
+              value: normalizedValue,
+              label
+            });
+          }
+        }
+
+        setAvailableChannels(
+          Array.from(nextOptions.values()).sort((left, right) => left.label.localeCompare(right.label))
+        );
+
+        if (successfulResponses.length !== form.account_sessions.length) {
+          setChannelsError("Часть аккаунтов не удалось загрузить. Показаны доступные каналы.");
+        }
+      } catch (error: unknown) {
+        if (cancelled) {
+          return;
+        }
+
+        setAvailableChannels([]);
+        if (error instanceof Error) {
+          setChannelsError(error.message);
+        } else {
+          setChannelsError("Не удалось загрузить каналы выбранных аккаунтов");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingChannels(false);
+        }
+      }
+    }
+
+    void loadChannelsForSelectedAccounts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [form.account_sessions, isModalOpen]);
+
+  function resetModalState() {
+    setIsModalOpen(false);
+    setEditingJob(null);
+    setForm(createInitialForm());
+    setAvailableChannels([]);
+    setLoadingChannels(false);
+    setChannelsError(null);
+    setModalError(null);
+  }
+
+  function openCreateModal() {
+    setActionError(null);
+    setNotice(null);
+    setEditingJob(null);
+    setForm(createInitialForm());
+    setAvailableChannels([]);
+    setChannelsError(null);
+    setModalError(null);
+    setIsModalOpen(true);
+  }
+
+  function openEditModal(job: AiCommentJob) {
+    setActionError(null);
+    setNotice(null);
+    setEditingJob(job);
+    setForm(toForm(job));
+    setAvailableChannels([]);
+    setChannelsError(null);
+    setModalError(null);
+    setIsModalOpen(true);
+  }
+
+  function closeModal() {
+    if (saving) {
+      return;
+    }
+
+    resetModalState();
+  }
+
+  async function submitModal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!userId) {
+      setModalError("Пользователь не определен. Войдите заново.");
+      return;
+    }
+
+    const normalizedName = form.name.trim();
+    const normalizedUserPrompt = form.user_prompt.trim();
+    const normalizedSystemPrompt = form.system_prompt.trim();
+    const normalizedSessions = Array.from(
+      new Set(form.account_sessions.map((item) => item.trim()).filter(Boolean))
+    );
+    const normalizedChannels = Array.from(
+      new Set(form.target_channels.map((item) => item.trim()).filter(Boolean))
+    );
+
+    if (!normalizedName) {
+      setModalError("Введите название кампании");
+      return;
+    }
+    if (normalizedSessions.length === 0) {
+      setModalError("Выберите хотя бы один аккаунт");
+      return;
+    }
+    if (normalizedChannels.length === 0) {
+      setModalError("Выберите хотя бы один канал");
+      return;
+    }
+    if (!normalizedUserPrompt) {
+      setModalError("Введите пользовательский промпт");
+      return;
+    }
+    if (!normalizedSystemPrompt) {
+      setModalError("Введите системный промпт");
+      return;
+    }
+
+    setSaving(true);
+    setModalError(null);
+    setActionError(null);
+    setNotice(null);
+
+    try {
+      const payload: AiCommentJobPayload = {
+        name: normalizedName,
+        account_sessions: normalizedSessions,
+        target_channels: normalizedChannels,
+        user_prompt: normalizedUserPrompt,
+        system_prompt: normalizedSystemPrompt
+      };
+
+      if (editingJob) {
+        const updated = await fetchJson<AiCommentJob>(
+          `${API_BASE}/users/${userId}/ai-comment-jobs/${editingJob.id}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify(payload)
+          }
+        );
+
+        setCampaigns((currentCampaigns) =>
+          currentCampaigns.map((campaign) => (campaign.id === updated.id ? updated : campaign))
+        );
+        setNotice(`Кампания «${updated.name}» обновлена.`);
+      } else {
+        const created = await fetchJson<AiCommentJob>(`${API_BASE}/users/${userId}/ai-comment-jobs`, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+
+        setCampaigns((currentCampaigns) => [...currentCampaigns, created]);
+        setNotice(`Кампания «${created.name}» создана.`);
+      }
+
+      resetModalState();
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        setModalError(error.message);
+      } else {
+        setModalError("Не удалось сохранить кампанию");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleAccountSession(sessionId: string) {
+    setForm((currentForm) => {
+      const exists = currentForm.account_sessions.includes(sessionId);
+      return {
+        ...currentForm,
+        account_sessions: exists
+          ? currentForm.account_sessions.filter((currentSessionId) => currentSessionId !== sessionId)
+          : [...currentForm.account_sessions, sessionId]
+      };
+    });
+  }
+
+  function toggleTargetChannel(channel: string) {
+    setForm((currentForm) => {
+      const exists = currentForm.target_channels.includes(channel);
+      return {
+        ...currentForm,
+        target_channels: exists
+          ? currentForm.target_channels.filter((currentChannel) => currentChannel !== channel)
+          : [...currentForm.target_channels, channel]
+      };
+    });
+  }
 
   async function handleToggle(job: AiCommentJob) {
     if (!userId) {
@@ -218,18 +689,10 @@ export default function AiCommentingPage() {
     }
   }
 
-  function handleCreate() {
-    setActionError(null);
-    setNotice("Форма создания кампании будет добавлена следующим шагом.");
-  }
-
-  function handleEdit(jobName: string) {
-    setActionError(null);
-    setNotice(`Редактирование кампании «${jobName}» будет добавлено следующим шагом.`);
-  }
-
   const showEmptyState = !loading && !loadError && campaigns.length === 0;
   const showList = !loading && !loadError && campaigns.length > 0;
+  const displayedSessions = mergeSessionOptions(sessions, form.account_sessions);
+  const displayedChannels = mergeChannelOptions(availableChannels, form.target_channels);
 
   return (
     <section className={styles.page}>
@@ -238,7 +701,7 @@ export default function AiCommentingPage() {
           <h1 className={styles.title}>Нейрокомментарии</h1>
           <p className={styles.subtitle}>Управляйте кампаниями AI-комментирования постов.</p>
         </div>
-        <button type="button" className={styles.createButton} onClick={handleCreate}>
+        <button type="button" className={styles.createButton} onClick={openCreateModal}>
           + Создать кампанию
         </button>
       </div>
@@ -296,7 +759,7 @@ export default function AiCommentingPage() {
                   <button
                     type="button"
                     className={styles.iconButton}
-                    onClick={() => handleEdit(job.name)}
+                    onClick={() => openEditModal(job)}
                     aria-label={`Редактировать кампанию ${job.name}`}
                     title="Редактировать кампанию"
                   >
@@ -335,6 +798,157 @@ export default function AiCommentingPage() {
               </article>
             );
           })}
+        </div>
+      )}
+
+      {isModalOpen && (
+        <div className={styles.modalOverlay} onClick={closeModal}>
+          <div className={styles.modal} onClick={(event) => event.stopPropagation()}>
+            <h2 className={styles.modalTitle}>
+              {editingJob ? "Редактировать кампанию" : "Создать кампанию"}
+            </h2>
+
+            {modalError && <div className={styles.errorBanner}>{modalError}</div>}
+
+            <form className={styles.form} onSubmit={submitModal}>
+              <div>
+                <label className={styles.label} htmlFor="campaign-name">
+                  Название кампании
+                </label>
+                <input
+                  id="campaign-name"
+                  className={styles.input}
+                  value={form.name}
+                  onChange={(event) =>
+                    setForm((currentForm) => ({ ...currentForm, name: event.target.value }))
+                  }
+                  maxLength={120}
+                  required
+                />
+              </div>
+
+              <div>
+                <p className={styles.label}>Аккаунты</p>
+                <p className={styles.helperText}>Выбрано: {form.account_sessions.length}</p>
+                {sessionsLoading && <p className={styles.helperText}>Загрузка активных сессий...</p>}
+                {!sessionsLoading && sessionsError && (
+                  <div className={styles.inlineState}>
+                    <p className={styles.helperText}>{sessionsError}</p>
+                    <button
+                      type="button"
+                      className={styles.secondaryButton}
+                      onClick={() => void loadSessions()}
+                    >
+                      Повторить
+                    </button>
+                  </div>
+                )}
+                {!sessionsLoading && !sessionsError && displayedSessions.length === 0 && (
+                  <p className={styles.helperText}>Нет активных сессий.</p>
+                )}
+                {!sessionsLoading && displayedSessions.length > 0 && (
+                  <div className={styles.gridOptions}>
+                    {displayedSessions.map((session) => (
+                      <label key={session.session_id} className={styles.checkboxLabel}>
+                        <input
+                          type="checkbox"
+                          checked={form.account_sessions.includes(session.session_id)}
+                          onChange={() => toggleAccountSession(session.session_id)}
+                        />
+                        <span>{session.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <p className={styles.label}>Каналы</p>
+                <p className={styles.helperText}>Выбрано: {form.target_channels.length}</p>
+                {loadingChannels && <p className={styles.helperText}>Загрузка каналов...</p>}
+                {!loadingChannels && channelsError && <p className={styles.helperText}>{channelsError}</p>}
+                {!loadingChannels && form.account_sessions.length === 0 && (
+                  <p className={styles.helperText}>Сначала выберите хотя бы один аккаунт.</p>
+                )}
+                {!loadingChannels &&
+                  form.account_sessions.length > 0 &&
+                  !channelsError &&
+                  displayedChannels.length === 0 && (
+                    <p className={styles.helperText}>Нет доступных каналов для выбранных аккаунтов.</p>
+                  )}
+                {!loadingChannels && displayedChannels.length > 0 && (
+                  <div className={styles.gridOptions}>
+                    {displayedChannels.map((channel) => (
+                      <label key={channel.value} className={styles.checkboxLabel}>
+                        <input
+                          type="checkbox"
+                          checked={form.target_channels.includes(channel.value)}
+                          onChange={() => toggleTargetChannel(channel.value)}
+                        />
+                        <span>{channel.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className={styles.label} htmlFor="user-prompt">
+                  Пользовательский промпт
+                </label>
+                <textarea
+                  id="user-prompt"
+                  className={styles.textarea}
+                  value={form.user_prompt}
+                  onChange={(event) =>
+                    setForm((currentForm) => ({
+                      ...currentForm,
+                      user_prompt: event.target.value
+                    }))
+                  }
+                  rows={5}
+                  required
+                />
+              </div>
+
+              <div>
+                <label className={styles.label} htmlFor="system-prompt">
+                  Системный промпт
+                </label>
+                <textarea
+                  id="system-prompt"
+                  className={styles.textarea}
+                  value={form.system_prompt}
+                  onChange={(event) =>
+                    setForm((currentForm) => ({
+                      ...currentForm,
+                      system_prompt: event.target.value
+                    }))
+                  }
+                  rows={6}
+                  required
+                />
+              </div>
+
+              <div className={styles.modalActions}>
+                <button
+                  type="submit"
+                  className={styles.createButton}
+                  disabled={saving || sessionsLoading || loadingChannels}
+                >
+                  {saving ? "Сохранение..." : "Сохранить"}
+                </button>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={closeModal}
+                  disabled={saving}
+                >
+                  Отмена
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </section>
