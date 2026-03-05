@@ -228,6 +228,15 @@
   height: 1rem;
 }
 
+.actionSpinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid rgba(252, 165, 165, 0.28);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
 .toggleWrap {
   position: relative;
   display: inline-flex;

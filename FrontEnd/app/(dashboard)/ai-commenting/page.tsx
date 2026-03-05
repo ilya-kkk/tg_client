@@ -248,6 +248,10 @@ function TrashIcon() {
   );
 }
 
+function SpinnerIcon() {
+  return <span className={styles.actionSpinner} aria-hidden="true" />;
+}
+
 export default function AiCommentingPage() {
   const [userId, setUserId] = useState<string>("");
   const [userIdResolved, setUserIdResolved] = useState<boolean>(false);
@@ -678,6 +682,7 @@ export default function AiCommentingPage() {
 
   async function handleDelete(job: AiCommentJob) {
     if (!userId) {
+      setActionError("Пользователь не определен. Войдите заново.");
       return;
     }
 
@@ -698,6 +703,7 @@ export default function AiCommentingPage() {
       setCampaigns((currentCampaigns) =>
         currentCampaigns.filter((campaign) => campaign.id !== job.id)
       );
+      setNotice(`Кампания «${job.name}» удалена.`);
     } catch (error: unknown) {
       if (error instanceof Error) {
         setActionError(error.message);
@@ -780,6 +786,7 @@ export default function AiCommentingPage() {
                     type="button"
                     className={styles.iconButton}
                     onClick={() => openEditModal(job)}
+                    disabled={isDeleting}
                     aria-label={`Редактировать кампанию ${job.name}`}
                     title="Редактировать кампанию"
                   >
@@ -791,10 +798,11 @@ export default function AiCommentingPage() {
                     className={styles.iconButtonDanger}
                     onClick={() => void handleDelete(job)}
                     disabled={isDeleting}
+                    aria-busy={isDeleting}
                     aria-label={`Удалить кампанию ${job.name}`}
-                    title="Удалить кампанию"
+                    title={isDeleting ? "Удаление кампании" : "Удалить кампанию"}
                   >
-                    <TrashIcon />
+                    {isDeleting ? <SpinnerIcon /> : <TrashIcon />}
                   </button>
 
                   <label className={styles.toggleWrap}>
@@ -802,7 +810,7 @@ export default function AiCommentingPage() {
                       type="checkbox"
                       className={styles.toggleInput}
                       checked={job.is_active}
-                      disabled={isToggling}
+                      disabled={isToggling || isDeleting}
                       onChange={() => void handleToggle(job)}
                     />
                     <span
