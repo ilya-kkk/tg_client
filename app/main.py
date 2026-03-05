@@ -146,12 +146,14 @@ reaction_jobs_repo: ReactionJobsRepo | None = None
 ai_comment_jobs_repo: AiCommentJobsRepo | None = None
 warmup_jobs_repo: WarmupJobsRepo | None = None
 reaction_jobs_task: asyncio.Task | None = None
+ai_comment_jobs_task: asyncio.Task | None = None
 warmup_jobs_task: asyncio.Task | None = None
 warmup_worker = WarmupWorker()
 warmup_job_tasks = warmup_worker.running
 
 WARMUP_MONITOR_INTERVAL_ENV = "WARMUP_MONITOR_INTERVAL_MINUTES"
 DEFAULT_WARMUP_MONITOR_INTERVAL_MINUTES = 5
+AI_COMMENT_JOBS_POLL_INTERVAL_SECONDS = 60
 
 
 tags_metadata = [
@@ -216,6 +218,43 @@ async def reaction_jobs_worker() -> None:
             logger.error("Ошибка в воркере авто-реакций: %s", e)
 
         await asyncio.sleep(poll_interval_seconds)
+
+
+def list_active_ai_comment_jobs() -> list[dict]:
+    if ai_comment_jobs_repo is None:
+        return []
+
+    response = (
+        ai_comment_jobs_repo.client.table(ai_comment_jobs_repo.table_name)
+        .select("*")
+        .eq("is_active", True)
+        .execute()
+    )
+    return response.data or []
+
+
+async def ai_comment_jobs_worker() -> None:
+    """Фоновый цикл, который раз в минуту запускает обработку активных кампаний нейрокомментирования."""
+    while True:
+        try:
+            if ai_comment_jobs_repo is None or client_manager is None:
+                await asyncio.sleep(AI_COMMENT_JOBS_POLL_INTERVAL_SECONDS)
+                continue
+
+            process_ai_comment_jobs = getattr(client_manager, "process_ai_comment_jobs", None)
+            if not callable(process_ai_comment_jobs):
+                await asyncio.sleep(AI_COMMENT_JOBS_POLL_INTERVAL_SECONDS)
+                continue
+
+            active_jobs = list_active_ai_comment_jobs()
+            for job in active_jobs:
+                await process_ai_comment_jobs(job)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Ошибка в воркере нейрокомментариев: %s", e)
+
+        await asyncio.sleep(AI_COMMENT_JOBS_POLL_INTERVAL_SECONDS)
 
 
 def get_warmup_monitor_interval_seconds() -> int:
@@ -305,7 +344,7 @@ def get_mode_average_actions_per_day(mode: str) -> int:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global client_manager, session_repo, parsed_channels_repo, reaction_jobs_repo, ai_comment_jobs_repo, warmup_jobs_repo, reaction_jobs_task, warmup_jobs_task
+    global client_manager, session_repo, parsed_channels_repo, reaction_jobs_repo, ai_comment_jobs_repo, warmup_jobs_repo, reaction_jobs_task, ai_comment_jobs_task, warmup_jobs_task
 
     # При старте приложения
     logger.info("Инициализация SessionRepo и MultiSessionManager...")
@@ -324,6 +363,7 @@ async def lifespan(app: FastAPI):
     warmup_worker.set_client_manager(client_manager)
     warmup_job_tasks.clear()
     reaction_jobs_task = asyncio.create_task(reaction_jobs_worker())
+    ai_comment_jobs_task = asyncio.create_task(ai_comment_jobs_worker())
     warmup_jobs_task = asyncio.create_task(warmup_jobs_worker())
     
     yield
@@ -337,6 +377,13 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         reaction_jobs_task = None
+    if ai_comment_jobs_task is not None:
+        ai_comment_jobs_task.cancel()
+        try:
+            await ai_comment_jobs_task
+        except asyncio.CancelledError:
+            pass
+        ai_comment_jobs_task = None
     if warmup_jobs_task is not None:
         warmup_jobs_task.cancel()
         try:
