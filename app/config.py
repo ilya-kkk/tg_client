@@ -33,6 +33,20 @@ OPENROUTER_MODELS = _parse_env_list(os.getenv("OPENROUTER_MODELS")) or [
 ]
 
 
+def _parse_positive_int(raw_value: str | None, default: int) -> int:
+    try:
+        parsed = int(str(raw_value or "").strip())
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+OPENROUTER_RETRIES_PER_MODEL = _parse_positive_int(
+    os.getenv("OPENROUTER_RETRIES_PER_MODEL"),
+    2,
+)
+
+
 def _parse_cors_origins(raw_value: str | None) -> list[str]:
     """Парсит CORS origins из строки вида 'http://a,http://b'."""
     if not raw_value:

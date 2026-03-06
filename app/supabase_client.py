@@ -351,7 +351,7 @@ class AiCommentJobsRepo:
     def list_history(self, user_id: str, job_id: str) -> List[Dict[str, Any]]:
         response = (
             self.client.table("ai_comment_job_posts")
-            .select("channel_id,message_id,comment_message_id,status,error,created_at")
+            .select("channel_id,message_id,comment_message_id,comment_text,status,error,created_at")
             .eq("job_id", job_id)
             .order("created_at", desc=True)
             .execute()
@@ -367,7 +367,9 @@ class AiCommentJobsRepo:
     ) -> Optional[Dict[str, Any]]:
         response = (
             self.client.table("ai_comment_job_posts")
-            .select("job_id,channel_id,message_id,status,error,comment_message_id,created_at")
+            .select(
+                "job_id,channel_id,message_id,status,error,comment_message_id,comment_text,created_at"
+            )
             .eq("job_id", job_id)
             .eq("channel_id", channel_id)
             .eq("message_id", int(message_id))
@@ -387,6 +389,7 @@ class AiCommentJobsRepo:
         status: str,
         error: Optional[str] = None,
         comment_message_id: Optional[int] = None,
+        comment_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         normalized_job_id = str(job_id or "").strip()
         normalized_channel_id = str(channel_id or "").strip()
@@ -404,6 +407,8 @@ class AiCommentJobsRepo:
         }
         if comment_message_id is not None:
             payload["comment_message_id"] = int(comment_message_id)
+        if comment_text is not None:
+            payload["comment_text"] = str(comment_text).strip() or None
 
         response = (
             self.client.table("ai_comment_job_posts")

@@ -22,12 +22,32 @@ export interface AiCommentJobPost {
   channel_id: string;
   message_id: number;
   comment_message_id: number | null;
+  comment_text: string | null;
   status: AiCommentJobHistoryStatus;
   error: string | null;
   created_at: string;
 }
 
 export interface AiCommentJobHistoryResponse extends Array<AiCommentJobPost> {}
+
+export interface MessagePreview {
+  id: number;
+  chat_id: number;
+  sender_id: number | null;
+  text: string;
+  date: string;
+  is_out: boolean;
+  has_media: boolean;
+  media_type: string | null;
+  media_id: number | null;
+}
+
+export interface AiCommentJobHistoryPostPreview {
+  session_id: string;
+  channel_id: string;
+  chat_name: string | null;
+  post: MessagePreview;
+}
 
 interface ApiErrorResponse {
   detail?: string;
@@ -147,6 +167,22 @@ export function getAiCommentJobHistory(
 ): Promise<AiCommentJobHistoryResponse> {
   return fetchJson<AiCommentJobHistoryResponse>(
     `${API_BASE}/users/${userId}/ai-comment-jobs/${jobId}/history`
+  );
+}
+
+export function getAiCommentJobHistoryPostPreview(
+  userId: string,
+  jobId: string,
+  channelId: string,
+  messageId: number
+): Promise<AiCommentJobHistoryPostPreview> {
+  const params = new URLSearchParams({
+    channel_id: channelId,
+    message_id: String(messageId)
+  });
+
+  return fetchJson<AiCommentJobHistoryPostPreview>(
+    `${API_BASE}/users/${userId}/ai-comment-jobs/${jobId}/history/post-preview?${params.toString()}`
   );
 }
 

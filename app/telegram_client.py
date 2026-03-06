@@ -1685,93 +1685,11 @@ class MultiSessionManager:
         try:
             # Получаем сущность чата (User / Chat / Channel)
             entity = await self.client.get_entity(chat_identifier)
-            
-            # Определяем ID и название чата
-            chat_id: Optional[int] = None
-            chat_name: Optional[str] = None
-            
-            if isinstance(entity, User):
-                chat_id = entity.id
-                chat_name = (entity.first_name or "") or "User"
-                if entity.last_name:
-                    chat_name = f"{chat_name} {entity.last_name}".strip()
-            elif isinstance(entity, (Chat, Channel)):
-                chat_id = entity.id
-                chat_name = getattr(entity, "title", None) or "Chat"
-            else:
-                chat_id = getattr(entity, "id", None)
-            
+            chat_id, chat_name = self._extract_chat_meta(entity)
+
             # Получаем сообщения
             messages = await self.client.get_messages(entity, limit=limit)
-            
-            result_messages: List[Dict[str, Any]] = []
-            for msg in messages:
-                # Определяем sender_id
-                sender_id: Optional[int] = None
-                if hasattr(msg, "sender_id") and msg.sender_id is not None:
-                    # В новых версиях Telethon sender_id обычно int
-                    try:
-                        sender_id = int(msg.sender_id)
-                    except (TypeError, ValueError):
-                        sender_id = None
-                elif hasattr(msg, "from_id") and msg.from_id is not None:
-                    from_id = msg.from_id
-                    if isinstance(from_id, types.PeerUser):
-                        sender_id = from_id.user_id
-                    elif isinstance(from_id, types.PeerChat):
-                        sender_id = from_id.chat_id
-                    elif isinstance(from_id, types.PeerChannel):
-                        sender_id = from_id.channel_id
-                
-                # Определяем chat_id из peer_id (на случай, если сверху не удалось)
-                msg_chat_id: Optional[int] = chat_id
-                if hasattr(msg, "peer_id") and msg.peer_id is not None:
-                    peer = msg.peer_id
-                    if hasattr(peer, "channel_id"):
-                        msg_chat_id = peer.channel_id
-                    elif hasattr(peer, "chat_id"):
-                        msg_chat_id = peer.chat_id
-                    elif hasattr(peer, "user_id"):
-                        msg_chat_id = peer.user_id
-                
-                # Информация о медиа
-                has_media = bool(getattr(msg, "media", None))
-                media_type: Optional[str] = None
-                if has_media and msg.media is not None:
-                    if isinstance(msg.media, MessageMediaPhoto):
-                        media_type = "photo"
-                    elif isinstance(msg.media, MessageMediaDocument):
-                        doc = msg.media.document
-                        attrs = getattr(doc, "attributes", []) or []
-                        for attr in attrs:
-                            if isinstance(attr, DocumentAttributeVideo):
-                                media_type = "video"
-                                break
-                            if isinstance(attr, DocumentAttributeAudio):
-                                media_type = "voice" if getattr(attr, "voice", False) else "audio"
-                                break
-                            if isinstance(attr, DocumentAttributeSticker):
-                                media_type = "sticker"
-                                break
-                        if media_type is None:
-                            media_type = "document"
-                    else:
-                        media_type = "other"
-                
-                result_messages.append(
-                    {
-                        "id": msg.id,
-                        "chat_id": msg_chat_id if msg_chat_id is not None else (chat_id or 0),
-                        "sender_id": sender_id,
-                        "text": msg.message or "",
-                        "date": msg.date.isoformat() if msg.date else "",
-                        "is_out": bool(getattr(msg, "out", False)),
-                        "has_media": has_media,
-                        "media_type": media_type,
-                        # Для скачивания медиа достаточно ID сообщения и chat_id
-                        "media_id": msg.id if has_media else None,
-                    }
-                )
+            result_messages = [self._serialize_message_info(msg, chat_id) for msg in messages]
             
             return {
                 "chat_id": chat_id if chat_id is not None else 0,
@@ -1785,6 +1703,132 @@ class MultiSessionManager:
             raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    @staticmethod
+    def _extract_chat_meta(entity: Any) -> tuple[Optional[int], Optional[str]]:
+        chat_id: Optional[int] = None
+        chat_name: Optional[str] = None
+
+        if isinstance(entity, User):
+            chat_id = entity.id
+            chat_name = (entity.first_name or "") or "User"
+            if entity.last_name:
+                chat_name = f"{chat_name} {entity.last_name}".strip()
+        elif isinstance(entity, (Chat, Channel)):
+            chat_id = entity.id
+            chat_name = getattr(entity, "title", None) or "Chat"
+        else:
+            chat_id = getattr(entity, "id", None)
+
+        return chat_id, chat_name
+
+    @staticmethod
+    def _serialize_message_info(message: Any, fallback_chat_id: Optional[int]) -> Dict[str, Any]:
+        sender_id: Optional[int] = None
+        if hasattr(message, "sender_id") and message.sender_id is not None:
+            try:
+                sender_id = int(message.sender_id)
+            except (TypeError, ValueError):
+                sender_id = None
+        elif hasattr(message, "from_id") and message.from_id is not None:
+            from_id = message.from_id
+            if isinstance(from_id, types.PeerUser):
+                sender_id = from_id.user_id
+            elif isinstance(from_id, types.PeerChat):
+                sender_id = from_id.chat_id
+            elif isinstance(from_id, types.PeerChannel):
+                sender_id = from_id.channel_id
+
+        message_chat_id: Optional[int] = fallback_chat_id
+        if hasattr(message, "peer_id") and message.peer_id is not None:
+            peer = message.peer_id
+            if hasattr(peer, "channel_id"):
+                message_chat_id = peer.channel_id
+            elif hasattr(peer, "chat_id"):
+                message_chat_id = peer.chat_id
+            elif hasattr(peer, "user_id"):
+                message_chat_id = peer.user_id
+
+        has_media = bool(getattr(message, "media", None))
+        media_type: Optional[str] = None
+        if has_media and message.media is not None:
+            if isinstance(message.media, MessageMediaPhoto):
+                media_type = "photo"
+            elif isinstance(message.media, MessageMediaDocument):
+                doc = message.media.document
+                attrs = getattr(doc, "attributes", []) or []
+                for attr in attrs:
+                    if isinstance(attr, DocumentAttributeVideo):
+                        media_type = "video"
+                        break
+                    if isinstance(attr, DocumentAttributeAudio):
+                        media_type = "voice" if getattr(attr, "voice", False) else "audio"
+                        break
+                    if isinstance(attr, DocumentAttributeSticker):
+                        media_type = "sticker"
+                        break
+                if media_type is None:
+                    media_type = "document"
+            else:
+                media_type = "other"
+
+        return {
+            "id": message.id,
+            "chat_id": message_chat_id if message_chat_id is not None else (fallback_chat_id or 0),
+            "sender_id": sender_id,
+            "text": message.message or "",
+            "date": message.date.isoformat() if message.date else "",
+            "is_out": bool(getattr(message, "out", False)),
+            "has_media": has_media,
+            "media_type": media_type,
+            "media_id": message.id if has_media else None,
+        }
+
+    async def get_message_by_id_for_sessions(
+        self,
+        session_ids: List[str],
+        chat_identifier: str,
+        message_id: int,
+    ) -> Dict[str, Any]:
+        normalized_session_ids = self._normalize_string_list(session_ids)
+        if not normalized_session_ids:
+            raise ValueError("У кампании нет доступных account_sessions для загрузки поста")
+
+        parsed_chat_identifier = self._parse_chat_identifier(chat_identifier)
+        collected_errors: List[str] = []
+
+        for session_id in normalized_session_ids:
+            try:
+                client = await self.get_client(session_id)
+                entity = await client.get_entity(parsed_chat_identifier)
+                chat_id, chat_name = self._extract_chat_meta(entity)
+                message = await client.get_messages(entity, ids=int(message_id))
+                if isinstance(message, list):
+                    message = message[0] if message else None
+                if message is None:
+                    collected_errors.append(f"session '{session_id}': пост не найден")
+                    continue
+
+                return {
+                    "session_id": session_id,
+                    "channel_id": self._normalize_chat_identifier(chat_identifier),
+                    "chat_name": chat_name,
+                    "post": self._serialize_message_info(message, chat_id),
+                }
+            except Exception as e:
+                logger.warning(
+                    "Не удалось получить пост из истории нейрокомментариев: session_id=%s channel=%s message_id=%s error=%s",
+                    session_id,
+                    chat_identifier,
+                    message_id,
+                    e,
+                )
+                collected_errors.append(f"session '{session_id}': {e}")
+
+        if collected_errors:
+            raise ValueError("Не удалось загрузить пост. " + "; ".join(collected_errors))
+
+        raise ValueError("Не удалось загрузить пост")
 
     async def search_messages(
         self, chat_identifier: str, query: str, limit: int = 50
@@ -4059,6 +4103,7 @@ class MultiSessionManager:
                         message_id=message_id,
                         status="posted",
                         comment_message_id=publish_result.get("comment_message_id"),
+                        comment_text=normalized_comment,
                     )
                     processed_posts.append(
                         {

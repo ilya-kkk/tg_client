@@ -1,6 +1,6 @@
 import asyncio
 import os
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from contextlib import asynccontextmanager
@@ -115,6 +115,7 @@ from app.models import (
     AiCommentJobUpdate,
     AiCommentJobOut,
     AiCommentJobPostOut,
+    AiCommentJobHistoryPostPreviewOut,
     WarmupJobCreate,
     WarmupJobUpdate,
     WarmupJobOut,
@@ -2146,6 +2147,64 @@ async def get_ai_comment_job_history(user_id: str, job_id: str):
         raise
     except Exception as e:
         logger.error("Ошибка при получении истории ai_comment_job: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/users/{user_id}/ai-comment-jobs/{job_id}/history/post-preview",
+    response_model=AiCommentJobHistoryPostPreviewOut,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def get_ai_comment_job_history_post_preview(
+    user_id: str,
+    job_id: str,
+    channel_id: str = Query(..., min_length=1),
+    message_id: int = Query(..., gt=0),
+):
+    if ai_comment_jobs_repo is None or client_manager is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="История ai_comment_jobs недоступна",
+        )
+
+    try:
+        job = ai_comment_jobs_repo.get_by_id(user_id=user_id, job_id=job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Кампания не найдена",
+            )
+
+        history_record = ai_comment_jobs_repo.get_history_record(
+            job_id=job_id,
+            channel_id=channel_id,
+            message_id=message_id,
+        )
+        if history_record is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Запись истории не найдена",
+            )
+
+        result = await client_manager.get_message_by_id_for_sessions(
+            session_ids=job.get("account_sessions") or [],
+            chat_identifier=channel_id,
+            message_id=message_id,
+        )
+        return AiCommentJobHistoryPostPreviewOut(**result)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error("Ошибка при загрузке поста из истории ai_comment_job: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",

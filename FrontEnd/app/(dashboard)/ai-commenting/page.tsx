@@ -7,10 +7,12 @@ import {
   type AiCommentJobCreateRequest,
   type AiCommentJobHistoryStatus,
   type AiCommentJobPost,
+  type AiCommentJobHistoryPostPreview,
   type ChatsResponse,
   createAiCommentJob,
   deleteAiCommentJob,
   getAiCommentJobHistory,
+  getAiCommentJobHistoryPostPreview,
   getSessionAccount,
   listAiCommentJobs,
   listSessionChats,
@@ -169,6 +171,47 @@ function getHistorySummary(item: AiCommentJobPost): string {
   }
 }
 
+function getHistoryItemKey(item: AiCommentJobPost): string {
+  return `${item.channel_id}-${item.message_id}-${item.created_at}`;
+}
+
+function getHistoryCommentText(item: AiCommentJobPost): string {
+  const savedComment = item.comment_text?.trim();
+  if (savedComment) {
+    return savedComment;
+  }
+
+  switch (item.status) {
+    case "posted":
+      return "Для этой записи текст комментария еще не был сохранен.";
+    case "skipped":
+      return "Для этого поста комментарий не публиковался.";
+    case "failed":
+      return "Комментарий не был опубликован из-за ошибки.";
+    default:
+      return "Комментарий недоступен.";
+  }
+}
+
+function getMediaTypeLabel(mediaType: string | null): string {
+  switch (mediaType) {
+    case "photo":
+      return "фото";
+    case "video":
+      return "видео";
+    case "audio":
+      return "аудио";
+    case "voice":
+      return "голосовое";
+    case "sticker":
+      return "стикер";
+    case "document":
+      return "документ";
+    default:
+      return "медиа";
+  }
+}
+
 function EditIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" className={styles.icon}>
@@ -258,6 +301,10 @@ export default function AiCommentingPage() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
   const [historyJobId, setHistoryJobId] = useState<string | null>(null);
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<AiCommentJobPost | null>(null);
+  const [historyPreview, setHistoryPreview] = useState<AiCommentJobHistoryPostPreview | null>(null);
+  const [historyPreviewLoading, setHistoryPreviewLoading] = useState<boolean>(false);
+  const [historyPreviewError, setHistoryPreviewError] = useState<string | null>(null);
 
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [togglingJobIds, setTogglingJobIds] = useState<Set<string>>(new Set());
@@ -271,6 +318,7 @@ export default function AiCommentingPage() {
   const [loadingChannels, setLoadingChannels] = useState<boolean>(false);
   const [channelsError, setChannelsError] = useState<string | null>(null);
   const historyRequestIdRef = useRef<number>(0);
+  const historyPreviewRequestIdRef = useRef<number>(0);
 
   useEffect(() => {
     const savedUserId = window.localStorage.getItem(STORAGE_USER_ID_KEY);
@@ -476,8 +524,17 @@ export default function AiCommentingPage() {
     setModalError(null);
   }
 
+  function resetHistoryPreviewState() {
+    historyPreviewRequestIdRef.current += 1;
+    setSelectedHistoryItem(null);
+    setHistoryPreview(null);
+    setHistoryPreviewError(null);
+    setHistoryPreviewLoading(false);
+  }
+
   function resetHistoryState() {
     historyRequestIdRef.current += 1;
+    resetHistoryPreviewState();
     setHistory([]);
     setHistoryError(null);
     setHistoryLoading(false);
@@ -524,6 +581,7 @@ export default function AiCommentingPage() {
 
       setActionError(null);
       setNotice(null);
+      resetHistoryPreviewState();
       setHistory([]);
       setHistoryError(null);
       setHistoryLoading(true);
@@ -559,6 +617,54 @@ export default function AiCommentingPage() {
         if (historyRequestIdRef.current === requestId) {
           setHistoryLoading(false);
           setHistoryLoadingJobId(null);
+        }
+      }
+    },
+    [userId]
+  );
+
+  const loadHistoryPreview = useCallback(
+    async (job: AiCommentJob, item: AiCommentJobPost) => {
+      const requestId = historyPreviewRequestIdRef.current + 1;
+      historyPreviewRequestIdRef.current = requestId;
+
+      setSelectedHistoryItem(item);
+      setHistoryPreview(null);
+      setHistoryPreviewError(null);
+      setHistoryPreviewLoading(true);
+
+      if (!userId) {
+        setHistoryPreviewError("Пользователь не определен. Войдите заново.");
+        setHistoryPreviewLoading(false);
+        return;
+      }
+
+      try {
+        const response = await getAiCommentJobHistoryPostPreview(
+          userId,
+          job.id,
+          item.channel_id,
+          item.message_id
+        );
+
+        if (historyPreviewRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        setHistoryPreview(response);
+      } catch (error: unknown) {
+        if (historyPreviewRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        if (error instanceof Error) {
+          setHistoryPreviewError(error.message);
+        } else {
+          setHistoryPreviewError("Не удалось загрузить пост");
+        }
+      } finally {
+        if (historyPreviewRequestIdRef.current === requestId) {
+          setHistoryPreviewLoading(false);
         }
       }
     },
@@ -761,6 +867,7 @@ export default function AiCommentingPage() {
   const historyJob = historyJobId
     ? campaigns.find((campaign) => campaign.id === historyJobId) ?? null
     : null;
+  const selectedHistoryItemKey = selectedHistoryItem ? getHistoryItemKey(selectedHistoryItem) : null;
 
   return (
     <section className={styles.page}>
@@ -886,96 +993,238 @@ export default function AiCommentingPage() {
       )}
 
       {historyJob && (
-        <div className={styles.drawerOverlay} onClick={closeHistory}>
-          <aside
-            className={styles.drawer}
-            onClick={(event) => event.stopPropagation()}
+        <div className={styles.historyOverlay}>
+          <button
+            type="button"
+            className={styles.historyBackdrop}
+            onClick={closeHistory}
+            aria-label="Закрыть историю кампании"
+          />
+
+          <div
+            className={styles.historyWorkspace}
             role="dialog"
             aria-modal="true"
             aria-labelledby="ai-comment-history-title"
           >
-            <div className={styles.drawerHeader}>
-              <div>
-                <p className={styles.drawerEyebrow}>История кампании</p>
-                <h2 id="ai-comment-history-title" className={styles.drawerTitle}>
-                  {historyJob.name}
-                </h2>
-                <p className={styles.drawerSubtitle}>
-                  Последние статусы по постам, комментариям и ошибкам этой кампании.
-                </p>
-              </div>
-              <button type="button" className={styles.secondaryButton} onClick={closeHistory}>
-                Закрыть
-              </button>
-            </div>
-
-            {historyLoading && (
-              <div className={styles.historyLoadingState} aria-label="Загрузка истории кампании">
-                {Array.from({ length: 4 }, (_, index) => (
-                  <div key={index} className={styles.historySkeletonItem} />
-                ))}
-              </div>
-            )}
-
-            {!historyLoading && historyError && (
-              <div className={styles.errorState}>
-                <p className={styles.stateTitle}>Не удалось загрузить историю</p>
-                <p className={styles.stateText}>{historyError}</p>
-                <button
-                  type="button"
-                  className={styles.secondaryButton}
-                  onClick={() => void loadHistory(historyJob)}
-                >
-                  Повторить
-                </button>
-              </div>
-            )}
-
-            {!historyLoading && !historyError && history.length === 0 && (
-              <div className={styles.emptyState}>
-                <p className={styles.stateTitle}>История пока пуста</p>
-                <p className={styles.stateText}>
-                  Как только кампания обработает новые посты, здесь появятся статусы публикаций.
-                </p>
-              </div>
-            )}
-
-            {!historyLoading && !historyError && history.length > 0 && (
-              <div className={styles.historyList}>
-                {history.map((item) => (
-                  <article
-                    key={`${item.channel_id}-${item.message_id}-${item.created_at}`}
-                    className={styles.historyItem}
-                  >
-                    <div className={styles.historyTopRow}>
+            <section className={styles.previewStage}>
+              <div className={styles.previewPanel}>
+                <div className={styles.previewHeader}>
+                  <div>
+                    <p className={styles.previewEyebrow}>Просмотр записи</p>
+                    <h2 className={styles.previewTitle}>Пост и комментарий</h2>
+                    <p className={styles.previewSubtitle}>
+                      Выберите карточку в истории справа, чтобы подтянуть пост из Telegram в центр
+                      экрана.
+                    </p>
+                  </div>
+                  {selectedHistoryItem && (
+                    <div className={styles.previewSelectionMeta}>
                       <span
                         className={`${styles.historyStatusBadge} ${
-                          item.status === "posted"
+                          selectedHistoryItem.status === "posted"
                             ? styles.historyStatusPosted
-                            : item.status === "failed"
+                            : selectedHistoryItem.status === "failed"
                               ? styles.historyStatusFailed
                               : styles.historyStatusSkipped
                         }`}
                       >
-                        {getHistoryStatusLabel(item.status)}
+                        {getHistoryStatusLabel(selectedHistoryItem.status)}
                       </span>
-                      <time className={styles.historyDate} dateTime={item.created_at}>
-                        {formatHistoryTimestamp(item.created_at)}
-                      </time>
+                      <p className={styles.previewSelectionText}>
+                        {selectedHistoryItem.channel_id} · пост #{selectedHistoryItem.message_id}
+                      </p>
                     </div>
+                  )}
+                </div>
 
-                    <p className={styles.historyChannel}>{item.channel_id}</p>
-                    <p className={styles.historyMeta}>
-                      Пост #{item.message_id}
-                      {item.comment_message_id ? ` · комментарий #${item.comment_message_id}` : ""}
+                {!selectedHistoryItem && (
+                  <div className={styles.emptyState}>
+                    <p className={styles.stateTitle}>Ничего не выбрано</p>
+                    <p className={styles.stateText}>
+                      Справа остаётся список истории. Нажмите на нужную запись, и здесь откроются
+                      исходный пост и сохранённый комментарий.
                     </p>
-                    <p className={styles.historySummary}>{getHistorySummary(item)}</p>
-                    {item.error && <p className={styles.historyErrorText}>{item.error}</p>}
-                  </article>
-                ))}
+                  </div>
+                )}
+
+                {selectedHistoryItem && (
+                  <div className={styles.previewGrid}>
+                    <article className={styles.previewCard}>
+                      <div className={styles.previewCardHeader}>
+                        <div>
+                          <p className={styles.previewCardEyebrow}>Пост</p>
+                          <h3 className={styles.previewCardTitle}>
+                            {historyPreview?.chat_name || selectedHistoryItem.channel_id}
+                          </h3>
+                        </div>
+                        <p className={styles.previewCardMeta}>
+                          {historyPreview?.post.date
+                            ? formatHistoryTimestamp(historyPreview.post.date)
+                            : formatHistoryTimestamp(selectedHistoryItem.created_at)}
+                        </p>
+                      </div>
+
+                      {historyPreviewLoading && (
+                        <div className={styles.previewLoadingBlock} aria-label="Загрузка поста">
+                          <div className={styles.previewSkeletonLine} />
+                          <div className={styles.previewSkeletonLine} />
+                          <div className={styles.previewSkeletonLineShort} />
+                        </div>
+                      )}
+
+                      {!historyPreviewLoading && historyPreviewError && (
+                        <div className={styles.errorState}>
+                          <p className={styles.stateTitle}>Не удалось загрузить пост</p>
+                          <p className={styles.stateText}>{historyPreviewError}</p>
+                          <button
+                            type="button"
+                            className={styles.secondaryButton}
+                            onClick={() => void loadHistoryPreview(historyJob, selectedHistoryItem)}
+                          >
+                            Повторить
+                          </button>
+                        </div>
+                      )}
+
+                      {!historyPreviewLoading && !historyPreviewError && historyPreview && (
+                        <>
+                          <p className={styles.previewBody}>
+                            {historyPreview.post.text.trim() || "У поста нет текстовой части."}
+                          </p>
+                          {historyPreview.post.has_media && (
+                            <p className={styles.previewHint}>
+                              В посте есть вложение: {getMediaTypeLabel(historyPreview.post.media_type)}
+                              .
+                            </p>
+                          )}
+                          <p className={styles.previewFootnote}>
+                            Загружено через сессию {historyPreview.session_id}.
+                          </p>
+                        </>
+                      )}
+                    </article>
+
+                    <article className={styles.previewCard}>
+                      <div className={styles.previewCardHeader}>
+                        <div>
+                          <p className={styles.previewCardEyebrow}>Комментарий</p>
+                          <h3 className={styles.previewCardTitle}>
+                            {selectedHistoryItem.comment_message_id
+                              ? `Комментарий #${selectedHistoryItem.comment_message_id}`
+                              : "Сохраненный текст"}
+                          </h3>
+                        </div>
+                        <p className={styles.previewCardMeta}>
+                          {formatHistoryTimestamp(selectedHistoryItem.created_at)}
+                        </p>
+                      </div>
+
+                      <p className={styles.previewBody}>{getHistoryCommentText(selectedHistoryItem)}</p>
+                      <p className={styles.previewHint}>{getHistorySummary(selectedHistoryItem)}</p>
+                      {selectedHistoryItem.error && (
+                        <p className={styles.previewErrorNote}>{selectedHistoryItem.error}</p>
+                      )}
+                    </article>
+                  </div>
+                )}
               </div>
-            )}
-          </aside>
+            </section>
+
+            <aside className={styles.drawer}>
+              <div className={styles.drawerHeader}>
+                <div>
+                  <p className={styles.drawerEyebrow}>История кампании</p>
+                  <h2 id="ai-comment-history-title" className={styles.drawerTitle}>
+                    {historyJob.name}
+                  </h2>
+                  <p className={styles.drawerSubtitle}>
+                    Последние статусы по постам, комментариям и ошибкам этой кампании.
+                  </p>
+                </div>
+                <button type="button" className={styles.secondaryButton} onClick={closeHistory}>
+                  Закрыть
+                </button>
+              </div>
+
+              {historyLoading && (
+                <div className={styles.historyLoadingState} aria-label="Загрузка истории кампании">
+                  {Array.from({ length: 4 }, (_, index) => (
+                    <div key={index} className={styles.historySkeletonItem} />
+                  ))}
+                </div>
+              )}
+
+              {!historyLoading && historyError && (
+                <div className={styles.errorState}>
+                  <p className={styles.stateTitle}>Не удалось загрузить историю</p>
+                  <p className={styles.stateText}>{historyError}</p>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => void loadHistory(historyJob)}
+                  >
+                    Повторить
+                  </button>
+                </div>
+              )}
+
+              {!historyLoading && !historyError && history.length === 0 && (
+                <div className={styles.emptyState}>
+                  <p className={styles.stateTitle}>История пока пуста</p>
+                  <p className={styles.stateText}>
+                    Как только кампания обработает новые посты, здесь появятся статусы публикаций.
+                  </p>
+                </div>
+              )}
+
+              {!historyLoading && !historyError && history.length > 0 && (
+                <div className={styles.historyList}>
+                  {history.map((item) => {
+                    const itemKey = getHistoryItemKey(item);
+                    const isSelected = itemKey === selectedHistoryItemKey;
+
+                    return (
+                      <button
+                        key={itemKey}
+                        type="button"
+                        className={`${styles.historyItem} ${
+                          isSelected ? styles.historyItemActive : ""
+                        }`}
+                        onClick={() => void loadHistoryPreview(historyJob, item)}
+                        aria-pressed={isSelected}
+                      >
+                        <div className={styles.historyTopRow}>
+                          <span
+                            className={`${styles.historyStatusBadge} ${
+                              item.status === "posted"
+                                ? styles.historyStatusPosted
+                                : item.status === "failed"
+                                  ? styles.historyStatusFailed
+                                  : styles.historyStatusSkipped
+                            }`}
+                          >
+                            {getHistoryStatusLabel(item.status)}
+                          </span>
+                          <time className={styles.historyDate} dateTime={item.created_at}>
+                            {formatHistoryTimestamp(item.created_at)}
+                          </time>
+                        </div>
+
+                        <p className={styles.historyChannel}>{item.channel_id}</p>
+                        <p className={styles.historyMeta}>
+                          Пост #{item.message_id}
+                          {item.comment_message_id ? ` · комментарий #${item.comment_message_id}` : ""}
+                        </p>
+                        <p className={styles.historySummary}>{getHistorySummary(item)}</p>
+                        {item.error && <p className={styles.historyErrorText}>{item.error}</p>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </aside>
+          </div>
         </div>
       )}
 

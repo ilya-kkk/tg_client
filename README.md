@@ -30,9 +30,11 @@ SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_KEY=<service_role_or_anon_key>
 OPENROUTER_API_KEY=<openrouter_api_key>
 OPENROUTER_MODELS=openrouter/free
+OPENROUTER_RETRIES_PER_MODEL=2
 ```
 
 `OPENROUTER_MODELS` опциональна. Если нужна жёсткая привязка к конкретным моделям/роутерам OpenRouter, передайте список через запятую.
+`OPENROUTER_RETRIES_PER_MODEL` опциональна. По умолчанию клиент повторяет один и тот же роутер/модель два раза, если получает пустой `200 OK`, таймаут или невалидный JSON.
 
 ## Supabase schema
 

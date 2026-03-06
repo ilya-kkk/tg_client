@@ -3,7 +3,11 @@ from typing import Any, Sequence
 
 import httpx
 
-from app.config import OPENROUTER_API_KEY, OPENROUTER_MODELS
+from app.config import (
+    OPENROUTER_API_KEY,
+    OPENROUTER_MODELS,
+    OPENROUTER_RETRIES_PER_MODEL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +23,12 @@ class OpenRouterClient:
         api_key: str | None = None,
         models: Sequence[str] | None = None,
         timeout_seconds: float = 30.0,
+        retries_per_model: int = OPENROUTER_RETRIES_PER_MODEL,
     ) -> None:
         self.api_key = (api_key if api_key is not None else OPENROUTER_API_KEY).strip()
         self.models = self._normalize_models(models or DEFAULT_OPENROUTER_MODELS)
         self.timeout_seconds = timeout_seconds
+        self.retries_per_model = max(1, int(retries_per_model))
 
     @staticmethod
     def _normalize_models(models: Sequence[str]) -> list[str]:
@@ -50,6 +56,10 @@ class OpenRouterClient:
         if not isinstance(first_choice, dict):
             return ""
 
+        text = first_choice.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+
         message = first_choice.get("message")
         if not isinstance(message, dict):
             return ""
@@ -57,6 +67,11 @@ class OpenRouterClient:
         content = message.get("content")
         if isinstance(content, str):
             return content.strip()
+
+        if isinstance(content, dict):
+            text_part = content.get("text")
+            if isinstance(text_part, str):
+                return text_part.strip()
 
         if isinstance(content, list):
             parts: list[str] = []
@@ -71,6 +86,34 @@ class OpenRouterClient:
             return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
 
         return ""
+
+    @classmethod
+    def _extract_empty_response_details(cls, response_json: dict[str, Any], raw_text: str) -> str:
+        choices = response_json.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return f"choices missing; body={cls._truncate_for_log(raw_text)}"
+
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            return f"first choice is not an object; body={cls._truncate_for_log(raw_text)}"
+
+        message = first_choice.get("message")
+        refusal = None
+        reasoning = None
+        finish_reason = first_choice.get("finish_reason")
+        if isinstance(message, dict):
+            refusal = message.get("refusal")
+            reasoning = message.get("reasoning")
+
+        detail_parts: list[str] = []
+        if finish_reason:
+            detail_parts.append(f"finish_reason={finish_reason}")
+        if isinstance(refusal, str) and refusal.strip():
+            detail_parts.append(f"refusal={cls._truncate_for_log(refusal.strip())}")
+        if isinstance(reasoning, str) and reasoning.strip():
+            detail_parts.append(f"reasoning={cls._truncate_for_log(reasoning.strip())}")
+        detail_parts.append(f"body={cls._truncate_for_log(raw_text)}")
+        return "; ".join(detail_parts)
 
     @staticmethod
     def _clean_comment_text(text: str) -> str:
@@ -119,68 +162,115 @@ class OpenRouterClient:
 
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             for model in selected_models:
-                messages: list[dict[str, str]] = []
-                if normalized_system_prompt:
-                    messages.append({"role": "system", "content": normalized_system_prompt})
-                messages.append({"role": "user", "content": user_content})
+                for attempt in range(1, self.retries_per_model + 1):
+                    messages: list[dict[str, str]] = []
+                    if normalized_system_prompt:
+                        messages.append({"role": "system", "content": normalized_system_prompt})
+                    messages.append({"role": "user", "content": user_content})
 
-                payload = {
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                }
+                    payload = {
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                    }
 
-                try:
-                    response = await client.post(
-                        OPENROUTER_CHAT_COMPLETIONS_URL,
-                        headers=headers,
-                        json=payload,
-                    )
-                except httpx.TimeoutException:
-                    logger.warning("Таймаут OpenRouter для модели '%s', пробуем следующую", model)
-                    continue
-                except httpx.HTTPError as e:
-                    logger.warning("HTTP ошибка OpenRouter для модели '%s': %s", model, e)
-                    continue
-                except Exception as e:
-                    logger.warning("Неожиданная ошибка OpenRouter для модели '%s': %s", model, e)
-                    continue
+                    is_last_attempt = attempt >= self.retries_per_model
 
-                if response.status_code >= 400:
-                    if response.status_code == 404 and "No endpoints found" in response.text:
-                        logger.warning(
-                            "Модель/роутер OpenRouter '%s' недоступна. Проверьте OPENROUTER_MODELS или используйте 'openrouter/free'",
-                            model,
+                    try:
+                        response = await client.post(
+                            OPENROUTER_CHAT_COMPLETIONS_URL,
+                            headers=headers,
+                            json=payload,
                         )
-                    logger.warning(
-                        "OpenRouter вернул ошибку для модели '%s': status=%s body=%s",
-                        model,
-                        response.status_code,
-                        self._truncate_for_log(response.text),
-                    )
-                    continue
+                    except httpx.TimeoutException:
+                        logger.warning(
+                            "Таймаут OpenRouter для модели '%s' (attempt %s/%s)%s",
+                            model,
+                            attempt,
+                            self.retries_per_model,
+                            ", пробуем следующую" if is_last_attempt else ", повторяем",
+                        )
+                        if is_last_attempt:
+                            break
+                        continue
+                    except httpx.HTTPError as e:
+                        logger.warning(
+                            "HTTP ошибка OpenRouter для модели '%s' (attempt %s/%s): %s%s",
+                            model,
+                            attempt,
+                            self.retries_per_model,
+                            e,
+                            ", пробуем следующую" if is_last_attempt else ", повторяем",
+                        )
+                        if is_last_attempt:
+                            break
+                        continue
+                    except Exception as e:
+                        logger.warning(
+                            "Неожиданная ошибка OpenRouter для модели '%s' (attempt %s/%s): %s%s",
+                            model,
+                            attempt,
+                            self.retries_per_model,
+                            e,
+                            ", пробуем следующую" if is_last_attempt else ", повторяем",
+                        )
+                        if is_last_attempt:
+                            break
+                        continue
 
-                try:
-                    body = response.json()
-                except ValueError:
-                    logger.warning(
-                        "Некорректный JSON от OpenRouter для модели '%s': body=%s",
-                        model,
-                        self._truncate_for_log(response.text),
-                    )
-                    continue
+                    if response.status_code >= 400:
+                        if response.status_code == 404 and "No endpoints found" in response.text:
+                            logger.warning(
+                                "Модель/роутер OpenRouter '%s' недоступна. Проверьте OPENROUTER_MODELS или используйте 'openrouter/free'",
+                                model,
+                            )
+                        logger.warning(
+                            "OpenRouter вернул ошибку для модели '%s' (attempt %s/%s): status=%s body=%s",
+                            model,
+                            attempt,
+                            self.retries_per_model,
+                            response.status_code,
+                            self._truncate_for_log(response.text),
+                        )
+                        break
 
-                generated = self._clean_comment_text(self._extract_content(body))
-                if not generated:
-                    logger.warning(
-                        "Пустой ответ от OpenRouter для модели '%s', пробуем следующую",
-                        model,
-                    )
-                    continue
+                    try:
+                        body = response.json()
+                    except ValueError:
+                        logger.warning(
+                            "Некорректный JSON от OpenRouter для модели '%s' (attempt %s/%s): body=%s%s",
+                            model,
+                            attempt,
+                            self.retries_per_model,
+                            self._truncate_for_log(response.text),
+                            ", пробуем следующую" if is_last_attempt else ", повторяем",
+                        )
+                        if is_last_attempt:
+                            break
+                        continue
 
-                logger.info("Комментарий успешно сгенерирован через OpenRouter модель '%s'", model)
-                return generated
+                    generated = self._clean_comment_text(self._extract_content(body))
+                    if not generated:
+                        logger.warning(
+                            "Пустой ответ от OpenRouter для модели '%s' (attempt %s/%s): %s%s",
+                            model,
+                            attempt,
+                            self.retries_per_model,
+                            self._extract_empty_response_details(body, response.text),
+                            ", пробуем следующую" if is_last_attempt else ", повторяем",
+                        )
+                        if is_last_attempt:
+                            break
+                        continue
+
+                    logger.info(
+                        "Комментарий успешно сгенерирован через OpenRouter модель '%s' (attempt %s/%s)",
+                        model,
+                        attempt,
+                        self.retries_per_model,
+                    )
+                    return generated
 
         logger.error("Все fallback-модели OpenRouter вернули ошибку или пустой ответ")
         return None

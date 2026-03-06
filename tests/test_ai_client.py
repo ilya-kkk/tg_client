@@ -148,6 +148,72 @@ class OpenRouterClientTests(unittest.IsolatedAsyncioTestCase):
             ["stale-model", "openrouter/free"],
         )
 
+    async def test_generate_comment_retries_same_model_after_empty_200_response(self):
+        _, ai_client_module = _reload_openrouter_modules()
+        FakeAsyncClient.queued_responses = [
+            FakeResponse(
+                200,
+                json_body={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "refusal": None,
+                                "reasoning": None,
+                            },
+                        }
+                    ]
+                },
+                text='{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"","refusal":null,"reasoning":null}}]}',
+            ),
+            FakeResponse(
+                200,
+                json_body={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "Вторая попытка успешна",
+                            }
+                        }
+                    ]
+                },
+            ),
+        ]
+
+        with patch.object(ai_client_module.httpx, "AsyncClient", FakeAsyncClient):
+            client = ai_client_module.OpenRouterClient(
+                api_key="test-key",
+                models=["openrouter/free"],
+                retries_per_model=2,
+            )
+            result = await client.generate_comment_with_fallback(
+                system_prompt="system",
+                user_prompt="user",
+                post_text="post",
+            )
+
+        self.assertEqual(result, "Вторая попытка успешна")
+        self.assertEqual(
+            [request["json"]["model"] for request in FakeAsyncClient.requests],
+            ["openrouter/free", "openrouter/free"],
+        )
+
+    def test_extract_content_supports_completion_text_field(self):
+        _, ai_client_module = _reload_openrouter_modules()
+        extracted = ai_client_module.OpenRouterClient._extract_content(
+            {
+                "choices": [
+                    {
+                        "text": "Текст из completion API",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(extracted, "Текст из completion API")
+
 
 if __name__ == "__main__":
     unittest.main()

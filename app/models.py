@@ -1578,9 +1578,18 @@ class AiCommentJobPostOut(BaseModel):
     channel_id: str
     message_id: int
     comment_message_id: Optional[int] = None
+    comment_text: Optional[str] = None
     status: Literal["posted", "skipped", "failed"]
     error: Optional[str] = None
     created_at: datetime
+
+
+class AiCommentJobHistoryPostPreviewOut(BaseModel):
+    """Превью поста из истории кампании нейрокомментирования."""
+    session_id: str
+    channel_id: str
+    chat_name: Optional[str] = None
+    post: MessageInfo
 
 
 class WarmupJobCreate(BaseModel):
