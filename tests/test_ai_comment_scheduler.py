@@ -175,11 +175,16 @@ class FakeClient:
             raise ValueError(f"entity {entity} is unavailable")
         return entity
 
-    async def get_messages(self, entity, limit: int):
+    async def get_messages(self, entity, limit: int | None = None, ids: int | None = None):
         if entity in self.message_errors:
             raise self.message_errors[entity]
         messages = self.messages_by_entity.get(entity, [])
-        return list(messages)[:limit]
+        if ids is not None:
+            for message in messages:
+                if getattr(message, "id", None) == ids:
+                    return message
+            return None
+        return list(messages)[: limit or len(messages)]
 
     async def send_message(self, entity, message: str, comment_to: int | None = None):
         self.send_attempts.append(
@@ -257,6 +262,7 @@ class FakeAiCommentJobsRepo:
         status: str,
         error: str | None = None,
         comment_message_id: int | None = None,
+        comment_text: str | None = None,
     ):
         record = {
             "job_id": job_id,
@@ -265,6 +271,7 @@ class FakeAiCommentJobsRepo:
             "status": status,
             "error": error,
             "comment_message_id": comment_message_id,
+            "comment_text": comment_text,
         }
         self.history_records[(job_id, channel_id, int(message_id))] = record
         return record
@@ -606,6 +613,7 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "status": "posted",
                 "error": None,
                 "comment_message_id": 1000,
+                "comment_text": "first comment",
             },
         )
         self.assertEqual(
@@ -617,6 +625,7 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "status": "posted",
                 "error": None,
                 "comment_message_id": 1000,
+                "comment_text": "second comment",
             },
         )
         self.assertEqual(
@@ -968,6 +977,35 @@ class AiCommentSchedulerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(repo.calls, [])
         self.assertEqual(job["last_checked_at"], "2026-03-05T21:00:00+00:00")
+
+    async def test_get_message_by_id_for_sessions_falls_back_to_next_session(self):
+        session_a_client = FakeClient(
+            entity_errors={"@channel_preview": ValueError("entity unavailable")},
+        )
+        session_b_client = FakeClient(
+            messages_by_entity={
+                "@channel_preview": [
+                    FakeMessage(1201, datetime(2026, 3, 5, 22, 5, tzinfo=timezone.utc), "preview post"),
+                ]
+            }
+        )
+        manager = TestMultiSessionManager(
+            {
+                "session-a": session_a_client,
+                "session-b": session_b_client,
+            }
+        )
+
+        result = await manager.get_message_by_id_for_sessions(
+            ["session-a", "session-b"],
+            "@channel_preview",
+            1201,
+        )
+
+        self.assertEqual(result["session_id"], "session-b")
+        self.assertEqual(result["channel_id"], "@channel_preview")
+        self.assertEqual(result["post"]["id"], 1201)
+        self.assertEqual(result["post"]["text"], "preview post")
 
     def test_normalize_ai_comment_text_cleans_wrappers_and_truncates(self):
         cleaned = MultiSessionManager._normalize_ai_comment_text(

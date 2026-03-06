@@ -50,6 +50,7 @@ OPENROUTER_RETRIES_PER_MODEL=2
 8. `008_create_ai_comment_job_posts.sql`
 9. `009_add_ai_comment_jobs_rls.sql`
 10. `010_add_ai_comment_job_indexes.sql`
+11. `011_add_ai_comment_job_posts_comment_text.sql`
 
 Если уже получили ошибку `PGRST205` для `public.warmup_jobs`, выполните минимум `004_create_warmup_jobs.sql` и `006_fix_warmup_jobs_user_fk.sql` в SQL Editor Supabase.
 

@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODELS: list[str] = list(OPENROUTER_MODELS)
+OPENROUTER_NO_REASONING_PAYLOAD = {
+    "effort": "none",
+    "exclude": True,
+}
 
 
 class OpenRouterClient:
@@ -119,6 +123,25 @@ class OpenRouterClient:
     def _clean_comment_text(text: str) -> str:
         return (text or "").strip().strip('"').strip()
 
+    @staticmethod
+    def _build_payload(
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            # For short public comments we do not want hidden reasoning to consume the
+            # completion budget and produce `content=null` on free routed models.
+            "reasoning": dict(OPENROUTER_NO_REASONING_PAYLOAD),
+        }
+        return payload
+
     async def generate_comment_with_fallback(
         self,
         *,
@@ -168,12 +191,12 @@ class OpenRouterClient:
                         messages.append({"role": "system", "content": normalized_system_prompt})
                     messages.append({"role": "user", "content": user_content})
 
-                    payload = {
-                        "model": model,
-                        "messages": messages,
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                    }
+                    payload = self._build_payload(
+                        model=model,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
 
                     is_last_attempt = attempt >= self.retries_per_model
 

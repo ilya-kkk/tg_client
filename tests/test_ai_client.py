@@ -147,6 +147,12 @@ class OpenRouterClientTests(unittest.IsolatedAsyncioTestCase):
             [request["json"]["model"] for request in FakeAsyncClient.requests],
             ["stale-model", "openrouter/free"],
         )
+        self.assertTrue(
+            all(
+                request["json"].get("reasoning") == {"effort": "none", "exclude": True}
+                for request in FakeAsyncClient.requests
+            )
+        )
 
     async def test_generate_comment_retries_same_model_after_empty_200_response(self):
         _, ai_client_module = _reload_openrouter_modules()
@@ -213,6 +219,18 @@ class OpenRouterClientTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(extracted, "Текст из completion API")
+
+    def test_build_payload_disables_reasoning_for_comment_generation(self):
+        _, ai_client_module = _reload_openrouter_modules()
+
+        payload = ai_client_module.OpenRouterClient._build_payload(
+            model="openrouter/free",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=300,
+            temperature=0.7,
+        )
+
+        self.assertEqual(payload["reasoning"], {"effort": "none", "exclude": True})
 
 
 if __name__ == "__main__":
