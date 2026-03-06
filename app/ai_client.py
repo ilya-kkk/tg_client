@@ -3,20 +3,16 @@ from typing import Any, Sequence
 
 import httpx
 
-from app.config import OPENROUTER_API_KEY
+from app.config import OPENROUTER_API_KEY, OPENROUTER_MODELS
 
 logger = logging.getLogger(__name__)
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
-FREE_OPENROUTER_MODELS: list[str] = [
-    "meta-llama/llama-3.1-8b-instruct:free",
-    "qwen/qwen-2.5-7b-instruct:free",
-    "google/gemma-2-9b-it:free",
-]
+DEFAULT_OPENROUTER_MODELS: list[str] = list(OPENROUTER_MODELS)
 
 
 class OpenRouterClient:
-    """Клиент OpenRouter с fallback между несколькими моделями."""
+    """Клиент OpenRouter с последовательной попыткой по списку моделей/роутеров."""
 
     def __init__(
         self,
@@ -25,7 +21,7 @@ class OpenRouterClient:
         timeout_seconds: float = 30.0,
     ) -> None:
         self.api_key = (api_key if api_key is not None else OPENROUTER_API_KEY).strip()
-        self.models = self._normalize_models(models or FREE_OPENROUTER_MODELS)
+        self.models = self._normalize_models(models or DEFAULT_OPENROUTER_MODELS)
         self.timeout_seconds = timeout_seconds
 
     @staticmethod
@@ -152,6 +148,11 @@ class OpenRouterClient:
                     continue
 
                 if response.status_code >= 400:
+                    if response.status_code == 404 and "No endpoints found" in response.text:
+                        logger.warning(
+                            "Модель/роутер OpenRouter '%s' недоступна. Проверьте OPENROUTER_MODELS или используйте 'openrouter/free'",
+                            model,
+                        )
                     logger.warning(
                         "OpenRouter вернул ошибку для модели '%s': status=%s body=%s",
                         model,

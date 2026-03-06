@@ -28,7 +28,11 @@ API_ID=ваш_api_id
 API_HASH=ваш_api_hash
 SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_KEY=<service_role_or_anon_key>
+OPENROUTER_API_KEY=<openrouter_api_key>
+OPENROUTER_MODELS=openrouter/free
 ```
+
+`OPENROUTER_MODELS` опциональна. Если нужна жёсткая привязка к конкретным моделям/роутерам OpenRouter, передайте список через запятую.
 
 ## Supabase schema
 

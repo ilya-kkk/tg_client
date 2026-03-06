@@ -20,6 +20,19 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 
+def _parse_env_list(raw_value: str | None) -> list[str]:
+    """Парсит список из env-переменной вида 'value-a,value-b'."""
+    if not raw_value:
+        return []
+
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
+OPENROUTER_MODELS = _parse_env_list(os.getenv("OPENROUTER_MODELS")) or [
+    "openrouter/free",
+]
+
+
 def _parse_cors_origins(raw_value: str | None) -> list[str]:
     """Парсит CORS origins из строки вида 'http://a,http://b'."""
     if not raw_value:
