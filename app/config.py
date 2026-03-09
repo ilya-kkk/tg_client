@@ -31,6 +31,9 @@ def _parse_env_list(raw_value: str | None) -> list[str]:
 OPENROUTER_MODELS = _parse_env_list(os.getenv("OPENROUTER_MODELS")) or [
     "openrouter/free",
 ]
+OPENROUTER_STRUCTURED_MODELS = _parse_env_list(os.getenv("OPENROUTER_STRUCTURED_MODELS")) or list(
+    OPENROUTER_MODELS
+)
 
 
 def _parse_positive_int(raw_value: str | None, default: int) -> int:

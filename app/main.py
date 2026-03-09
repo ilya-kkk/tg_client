@@ -116,6 +116,10 @@ from app.models import (
     AiCommentJobOut,
     AiCommentJobPostOut,
     AiCommentJobHistoryPostPreviewOut,
+    AiReplyJobCreate,
+    AiReplyJobUpdate,
+    AiReplyJobOut,
+    AiReplyJobMessageOut,
     WarmupJobCreate,
     WarmupJobUpdate,
     WarmupJobOut,
@@ -129,6 +133,7 @@ from app.supabase_client import (
     ParsedChannelsRepo,
     ReactionJobsRepo,
     AiCommentJobsRepo,
+    AiReplyJobsRepo,
     WarmupJobsRepo,
 )
 from app.telegram_client import MultiSessionManager
@@ -145,9 +150,11 @@ session_repo: SessionRepo | None = None
 parsed_channels_repo: ParsedChannelsRepo | None = None
 reaction_jobs_repo: ReactionJobsRepo | None = None
 ai_comment_jobs_repo: AiCommentJobsRepo | None = None
+ai_reply_jobs_repo: AiReplyJobsRepo | None = None
 warmup_jobs_repo: WarmupJobsRepo | None = None
 reaction_jobs_task: asyncio.Task | None = None
 ai_comment_jobs_task: asyncio.Task | None = None
+ai_reply_jobs_task: asyncio.Task | None = None
 warmup_jobs_task: asyncio.Task | None = None
 warmup_worker = WarmupWorker()
 warmup_job_tasks = warmup_worker.running
@@ -155,6 +162,7 @@ warmup_job_tasks = warmup_worker.running
 WARMUP_MONITOR_INTERVAL_ENV = "WARMUP_MONITOR_INTERVAL_MINUTES"
 DEFAULT_WARMUP_MONITOR_INTERVAL_MINUTES = 5
 AI_COMMENT_JOBS_POLL_INTERVAL_SECONDS = 60
+AI_REPLY_JOBS_POLL_INTERVAL_SECONDS = 60
 
 
 tags_metadata = [
@@ -249,6 +257,43 @@ async def ai_comment_jobs_worker() -> None:
         await asyncio.sleep(AI_COMMENT_JOBS_POLL_INTERVAL_SECONDS)
 
 
+async def ai_reply_jobs_worker() -> None:
+    """Фоновый цикл, который раз в минуту обрабатывает активные кампании нейроответов."""
+    while True:
+        try:
+            if ai_reply_jobs_repo is None or client_manager is None:
+                await asyncio.sleep(AI_REPLY_JOBS_POLL_INTERVAL_SECONDS)
+                continue
+
+            active_jobs = ai_reply_jobs_repo.list_active()
+            active_job_ids = {
+                str(job.get("id") or "").strip()
+                for job in active_jobs
+                if str(job.get("id") or "").strip()
+            }
+
+            for job in active_jobs:
+                try:
+                    await client_manager.process_ai_reply_jobs(
+                        job,
+                        ai_reply_jobs_repo=ai_reply_jobs_repo,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Ошибка обработки кампании нейроответов: job_id=%s error=%s",
+                        job.get("id"),
+                        e,
+                    )
+
+            client_manager.cleanup_inactive_ai_reply_jobs(active_job_ids)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Ошибка в воркере нейроответов: %s", e)
+
+        await asyncio.sleep(AI_REPLY_JOBS_POLL_INTERVAL_SECONDS)
+
+
 def get_warmup_monitor_interval_seconds() -> int:
     raw_value = os.getenv(
         WARMUP_MONITOR_INTERVAL_ENV,
@@ -336,7 +381,7 @@ def get_mode_average_actions_per_day(mode: str) -> int:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global client_manager, session_repo, parsed_channels_repo, reaction_jobs_repo, ai_comment_jobs_repo, warmup_jobs_repo, reaction_jobs_task, ai_comment_jobs_task, warmup_jobs_task
+    global client_manager, session_repo, parsed_channels_repo, reaction_jobs_repo, ai_comment_jobs_repo, ai_reply_jobs_repo, warmup_jobs_repo, reaction_jobs_task, ai_comment_jobs_task, ai_reply_jobs_task, warmup_jobs_task
 
     # При старте приложения
     logger.info("Инициализация SessionRepo и MultiSessionManager...")
@@ -344,18 +389,21 @@ async def lifespan(app: FastAPI):
     parsed_channels_repo = ParsedChannelsRepo()
     reaction_jobs_repo = ReactionJobsRepo()
     ai_comment_jobs_repo = AiCommentJobsRepo()
+    ai_reply_jobs_repo = AiReplyJobsRepo()
     warmup_jobs_repo = WarmupJobsRepo()
     client_manager = MultiSessionManager(session_repo=session_repo)
     app.state.session_repo = session_repo
     app.state.parsed_channels_repo = parsed_channels_repo
     app.state.reaction_jobs_repo = reaction_jobs_repo
     app.state.ai_comment_jobs_repo = ai_comment_jobs_repo
+    app.state.ai_reply_jobs_repo = ai_reply_jobs_repo
     app.state.warmup_jobs_repo = warmup_jobs_repo
     app.state.client_manager = client_manager
     warmup_worker.set_client_manager(client_manager)
     warmup_job_tasks.clear()
     reaction_jobs_task = asyncio.create_task(reaction_jobs_worker())
     ai_comment_jobs_task = asyncio.create_task(ai_comment_jobs_worker())
+    ai_reply_jobs_task = asyncio.create_task(ai_reply_jobs_worker())
     warmup_jobs_task = asyncio.create_task(warmup_jobs_worker())
     
     yield
@@ -376,6 +424,13 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         ai_comment_jobs_task = None
+    if ai_reply_jobs_task is not None:
+        ai_reply_jobs_task.cancel()
+        try:
+            await ai_reply_jobs_task
+        except asyncio.CancelledError:
+            pass
+        ai_reply_jobs_task = None
     if warmup_jobs_task is not None:
         warmup_jobs_task.cancel()
         try:
@@ -2205,6 +2260,151 @@ async def get_ai_comment_job_history_post_preview(
         )
     except Exception as e:
         logger.error("Ошибка при загрузке поста из истории ai_comment_job: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/users/{user_id}/ai-reply-jobs",
+    response_model=list[AiReplyJobOut],
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def list_ai_reply_jobs(user_id: str):
+    if ai_reply_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище ai_reply_jobs не инициализировано",
+        )
+    try:
+        rows = ai_reply_jobs_repo.list_by_user(user_id)
+        return [AiReplyJobOut(**row) for row in rows]
+    except Exception as e:
+        logger.error("Ошибка при получении ai_reply_jobs: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/users/{user_id}/ai-reply-jobs",
+    response_model=AiReplyJobOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["users"],
+)
+async def create_ai_reply_job(user_id: str, request: AiReplyJobCreate):
+    if ai_reply_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище ai_reply_jobs не инициализировано",
+        )
+    try:
+        payload = request.model_dump()
+        payload.setdefault("is_active", False)
+        row = ai_reply_jobs_repo.create(user_id=user_id, payload=payload)
+        return AiReplyJobOut(**row)
+    except Exception as e:
+        logger.error("Ошибка при создании ai_reply_job: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.patch(
+    "/users/{user_id}/ai-reply-jobs/{job_id}",
+    response_model=AiReplyJobOut,
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def update_ai_reply_job(user_id: str, job_id: str, request: AiReplyJobUpdate):
+    if ai_reply_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище ai_reply_jobs не инициализировано",
+        )
+    payload = request.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Не переданы данные для обновления",
+        )
+
+    try:
+        row = ai_reply_jobs_repo.update(user_id=user_id, job_id=job_id, payload=payload)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Кампания не найдена",
+            )
+        return AiReplyJobOut(**row)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Ошибка при обновлении ai_reply_job: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.delete(
+    "/users/{user_id}/ai-reply-jobs/{job_id}",
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def delete_ai_reply_job(user_id: str, job_id: str):
+    if ai_reply_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище ai_reply_jobs не инициализировано",
+        )
+    try:
+        deleted = ai_reply_jobs_repo.delete(user_id=user_id, job_id=job_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Кампания не найдена",
+            )
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Ошибка при удалении ai_reply_job: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/users/{user_id}/ai-reply-jobs/{job_id}/history",
+    response_model=list[AiReplyJobMessageOut],
+    status_code=status.HTTP_200_OK,
+    tags=["users"],
+)
+async def get_ai_reply_job_history(user_id: str, job_id: str):
+    if ai_reply_jobs_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище ai_reply_jobs не инициализировано",
+        )
+
+    try:
+        if ai_reply_jobs_repo.get_by_id(user_id=user_id, job_id=job_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Кампания не найдена",
+            )
+        rows = ai_reply_jobs_repo.list_history(user_id=user_id, job_id=job_id)
+        return [AiReplyJobMessageOut(**row) for row in rows]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Ошибка при получении истории ai_reply_job: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",

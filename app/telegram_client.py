@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Union
+from pydantic import BaseModel, ConfigDict, Field
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import (
@@ -30,13 +31,16 @@ from telethon.tl.types import (
 )
 from app.ai_client import OpenRouterClient
 from app.config import API_ID, API_HASH
-from app.supabase_client import AiCommentJobsRepo, SessionRepo
+from app.supabase_client import AiCommentJobsRepo, AiReplyJobsRepo, SessionRepo
 
 AUTH_REQUEST_TIMEOUT_SECONDS = 30
 POPULAR_REACTIONS: List[str] = ["👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "💯", "🎉"]
 AI_COMMENT_JOB_MESSAGES_LIMIT = 100
 AI_COMMENT_TEXT_LIMIT = 1000
 AI_COMMENT_FLOOD_WAIT_PADDING_SECONDS = 60
+AI_REPLY_JOB_MESSAGES_LIMIT = 150
+AI_REPLY_TEXT_LIMIT = 1200
+AI_REPLY_FLOOD_WAIT_PADDING_SECONDS = 60
 AI_COMMENT_COMMENTS_DISABLED_MARKERS = (
     "commenttodiscussionerror",
     "discussionmessageforbiddenerror",
@@ -74,6 +78,17 @@ AI_COMMENT_CHANNEL_UNAVAILABLE_MARKERS = (
     "channel is unavailable",
     " is unavailable",
 )
+AI_REPLY_ACCOUNT_NO_RIGHTS_MARKERS = AI_COMMENT_ACCOUNT_NO_RIGHTS_MARKERS
+AI_REPLY_CHAT_UNAVAILABLE_MARKERS = AI_COMMENT_CHANNEL_UNAVAILABLE_MARKERS
+AI_REPLY_DECISION_SYSTEM_PROMPT = """
+Ты анализируешь входящие сообщения в Telegram и решаешь, нужно ли отвечать на них от имени аккаунта.
+
+Сравнивай сообщение по смыслу с примерами триггеров, а не только по точному совпадению.
+Если сообщение не подходит ни под один триггер, верни should_reply=false и null в полях matched_trigger и reply_text.
+Если сообщение подходит, верни should_reply=true, matched_trigger как один из переданных триггеров и reply_text как готовый ответ для отправки.
+Ответ должен быть естественным, кратким и без упоминаний, что ты ИИ.
+Верни только structured output по схеме, без markdown и без пояснений.
+""".strip()
 logger = logging.getLogger(__name__)
 
 
@@ -83,6 +98,23 @@ class ReactionListenerState:
     handler: Any
     session_id: str
     chat_identifier: str
+
+
+class AiReplyDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    should_reply: bool | None = Field(
+        None,
+        description="Нужно ли отвечать на входящее сообщение; может отсутствовать у нестабильных free-моделей",
+    )
+    matched_trigger: str | None = Field(
+        ...,
+        description="Точный триггер из входного списка, если should_reply=true, иначе null",
+    )
+    reply_text: str | None = Field(
+        ...,
+        description="Готовый текст ответа для Telegram, если should_reply=true, иначе null",
+    )
 
 
 class MultiSessionManager:
@@ -107,6 +139,9 @@ class MultiSessionManager:
         self._reaction_last_seen_ids: Dict[str, int] = {}
         self._ai_comment_job_round_robin_indexes: Dict[str, int] = {}
         self._ai_comment_session_pause_until: Dict[str, float] = {}
+        self._ai_reply_job_round_robin_indexes: Dict[str, int] = {}
+        self._ai_reply_session_pause_until: Dict[str, float] = {}
+        self._session_user_ids: Dict[str, Optional[int]] = {}
 
     def _get_session_repo(self) -> SessionRepo:
         if self.session_repo is None:
@@ -1723,22 +1758,27 @@ class MultiSessionManager:
         return chat_id, chat_name
 
     @staticmethod
-    def _serialize_message_info(message: Any, fallback_chat_id: Optional[int]) -> Dict[str, Any]:
-        sender_id: Optional[int] = None
+    def _extract_message_sender_id(message: Any) -> Optional[int]:
         if hasattr(message, "sender_id") and message.sender_id is not None:
             try:
-                sender_id = int(message.sender_id)
+                return int(message.sender_id)
             except (TypeError, ValueError):
-                sender_id = None
-        elif hasattr(message, "from_id") and message.from_id is not None:
+                return None
+
+        if hasattr(message, "from_id") and message.from_id is not None:
             from_id = message.from_id
             if isinstance(from_id, types.PeerUser):
-                sender_id = from_id.user_id
-            elif isinstance(from_id, types.PeerChat):
-                sender_id = from_id.chat_id
-            elif isinstance(from_id, types.PeerChannel):
-                sender_id = from_id.channel_id
+                return from_id.user_id
+            if isinstance(from_id, types.PeerChat):
+                return from_id.chat_id
+            if isinstance(from_id, types.PeerChannel):
+                return from_id.channel_id
 
+        return None
+
+    @staticmethod
+    def _serialize_message_info(message: Any, fallback_chat_id: Optional[int]) -> Dict[str, Any]:
+        sender_id = MultiSessionManager._extract_message_sender_id(message)
         message_chat_id: Optional[int] = fallback_chat_id
         if hasattr(message, "peer_id") and message.peer_id is not None:
             peer = message.peer_id
@@ -1783,6 +1823,27 @@ class MultiSessionManager:
             "media_type": media_type,
             "media_id": message.id if has_media else None,
         }
+
+    async def _get_session_user_id(self, session_id: str) -> Optional[int]:
+        normalized_session_id = self._normalize_session_id(session_id)
+        if normalized_session_id in self._session_user_ids:
+            return self._session_user_ids[normalized_session_id]
+
+        try:
+            client = await self.get_client(normalized_session_id)
+            me = await client.get_me()
+            raw_user_id = getattr(me, "id", None)
+            user_id = int(raw_user_id) if raw_user_id is not None else None
+        except Exception as e:
+            logger.warning(
+                "Не удалось получить user_id сессии для нейроответов: session_id=%s error=%s",
+                normalized_session_id,
+                e,
+            )
+            user_id = None
+
+        self._session_user_ids[normalized_session_id] = user_id
+        return user_id
 
     async def get_message_by_id_for_sessions(
         self,
@@ -3327,6 +3388,9 @@ class MultiSessionManager:
         self._authorized_sessions.clear()
         self._ai_comment_job_round_robin_indexes.clear()
         self._ai_comment_session_pause_until.clear()
+        self._ai_reply_job_round_robin_indexes.clear()
+        self._ai_reply_session_pause_until.clear()
+        self._session_user_ids.clear()
     
     def is_connected(self, session_id: Optional[str] = None) -> bool:
         """Проверяет, авторизована ли сессия."""
@@ -4246,6 +4310,1009 @@ class MultiSessionManager:
                 )
 
         return None
+
+    @classmethod
+    def _classify_ai_reply_error(cls, error: BaseException) -> str:
+        if cls._error_name(error) == "FloodWaitError":
+            return "flood_wait"
+
+        signature = cls._build_ai_comment_error_signature(error)
+        if any(marker in signature for marker in AI_REPLY_ACCOUNT_NO_RIGHTS_MARKERS):
+            return "account_no_rights"
+        if any(marker in signature for marker in AI_REPLY_CHAT_UNAVAILABLE_MARKERS):
+            return "chat_unavailable"
+        return "generic"
+
+    def _get_ai_reply_session_pause_remaining(self, session_id: str) -> int:
+        paused_until = self._ai_reply_session_pause_until.get(session_id)
+        if paused_until is None:
+            return 0
+
+        remaining = int(paused_until - self._current_monotonic_time())
+        if remaining <= 0:
+            self._ai_reply_session_pause_until.pop(session_id, None)
+            return 0
+        return remaining
+
+    def _pause_ai_reply_session(self, session_id: str, flood_wait_seconds: int) -> int:
+        pause_seconds = max(1, int(flood_wait_seconds)) + AI_REPLY_FLOOD_WAIT_PADDING_SECONDS
+        current_pause_until = self._ai_reply_session_pause_until.get(session_id, 0.0)
+        next_pause_until = self._current_monotonic_time() + pause_seconds
+        self._ai_reply_session_pause_until[session_id] = max(current_pause_until, next_pause_until)
+        return pause_seconds
+
+    def _filter_available_ai_reply_sessions(
+        self,
+        session_ids: List[str],
+        *,
+        job_id: str,
+        chat_id: str = "",
+        message_id: Optional[int] = None,
+    ) -> List[str]:
+        available_sessions: List[str] = []
+        for session_id in session_ids:
+            normalized_session_id = str(session_id or "").strip()
+            if not normalized_session_id:
+                continue
+
+            pause_remaining = self._get_ai_reply_session_pause_remaining(normalized_session_id)
+            if pause_remaining > 0:
+                logger.info(
+                    "Пропуск session нейроответов из-за активной паузы: job_id=%s session_id=%s chat=%s message_id=%s pause_remaining=%s",
+                    job_id,
+                    normalized_session_id,
+                    chat_id,
+                    message_id,
+                    pause_remaining,
+                )
+                continue
+
+            available_sessions.append(normalized_session_id)
+
+        return available_sessions
+
+    def _get_ai_reply_session_order(self, job_id: str, session_ids: List[str]) -> List[str]:
+        normalized_session_ids = self._filter_available_ai_reply_sessions(
+            session_ids,
+            job_id=job_id,
+        )
+        if not job_id or not normalized_session_ids:
+            return normalized_session_ids
+
+        start_index = self._ai_reply_job_round_robin_indexes.get(job_id, 0) % len(normalized_session_ids)
+        ordered_sessions = normalized_session_ids[start_index:] + normalized_session_ids[:start_index]
+        self._ai_reply_job_round_robin_indexes[job_id] = (start_index + 1) % len(normalized_session_ids)
+        return ordered_sessions
+
+    def _clear_ai_reply_job_runtime_state(self, job_id: str) -> None:
+        self._ai_reply_job_round_robin_indexes.pop(job_id, None)
+
+    def cleanup_inactive_ai_reply_jobs(self, active_job_ids: set[str]) -> None:
+        known_job_ids = set(self._ai_reply_job_round_robin_indexes.keys())
+        for job_id in known_job_ids:
+            if job_id and job_id not in active_job_ids:
+                self._clear_ai_reply_job_runtime_state(job_id)
+
+    @classmethod
+    def _format_ai_reply_publish_error(
+        cls,
+        *,
+        error: BaseException,
+        session_id: str,
+        chat_id: str,
+        message_id: int,
+    ) -> str:
+        error_kind = cls._classify_ai_reply_error(error)
+        if error_kind == "flood_wait":
+            wait_seconds = cls._extract_flood_wait_seconds(error)
+            return (
+                f"FloodWait для session '{session_id}' при ответе в чате '{chat_id}' "
+                f"на сообщение {message_id}: подождите {wait_seconds} сек."
+            )
+        if error_kind == "account_no_rights":
+            return f"У session '{session_id}' нет прав на ответ в чате '{chat_id}'"
+        if error_kind == "chat_unavailable":
+            return f"Чат '{chat_id}' недоступен для session '{session_id}'"
+        return f"Не удалось отправить reply от session '{session_id}': {error}"
+
+    @staticmethod
+    def _record_ai_reply_failure(
+        repo: AiReplyJobsRepo,
+        *,
+        job_id: str,
+        chat_id: str,
+        message_id: int,
+        error_message: str,
+        chat_name: Optional[str] = None,
+        sender_id: Optional[int] = None,
+        message_text: Optional[str] = None,
+        message_date: Optional[str] = None,
+        matched_trigger: Optional[str] = None,
+    ) -> None:
+        try:
+            repo.upsert_history_record(
+                job_id=job_id,
+                chat_id=chat_id,
+                chat_name=chat_name,
+                message_id=message_id,
+                sender_id=sender_id,
+                message_text=message_text,
+                message_date=message_date,
+                matched_trigger=matched_trigger,
+                status="failed",
+                error=error_message,
+            )
+        except Exception as repo_error:
+            logger.error(
+                "Не удалось записать failed-статус в ai_reply_job_messages: job_id=%s chat_id=%s message_id=%s error=%s",
+                job_id,
+                chat_id,
+                message_id,
+                repo_error,
+            )
+
+    @staticmethod
+    def _extract_ai_reply_message_text(message: Any) -> str:
+        for attr_name in ("raw_text", "message", "text"):
+            value = getattr(message, attr_name, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    @classmethod
+    def _normalize_ai_reply_text(cls, text: str, limit: int = AI_REPLY_TEXT_LIMIT) -> str:
+        return cls._normalize_ai_comment_text(text, limit=limit)
+
+    async def _collect_job_session_user_ids(self, session_ids: List[str]) -> set[int]:
+        managed_user_ids: set[int] = set()
+        for session_id in session_ids:
+            user_id = await self._get_session_user_id(session_id)
+            if user_id is not None:
+                managed_user_ids.add(user_id)
+        return managed_user_ids
+
+    @staticmethod
+    def _build_ai_reply_user_prompt(
+        *,
+        triggers: List[str],
+        reply_prompt: str,
+        message_text: str,
+    ) -> str:
+        trigger_lines = "\n".join(f"{index + 1}. {trigger}" for index, trigger in enumerate(triggers))
+        return (
+            "Примеры триггеров:\n"
+            f"{trigger_lines}\n\n"
+            "Инструкция, как отвечать:\n"
+            f"{reply_prompt.strip()}\n\n"
+            "Входящее сообщение:\n"
+            f"{message_text.strip()}"
+        ).strip()
+
+    def _refresh_ai_reply_job(self, repo: AiReplyJobsRepo, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        job_id = str(job.get("id") or "").strip()
+        if not job_id:
+            return None
+
+        try:
+            return repo.get_by_id_for_worker(job_id)
+        except Exception as e:
+            logger.warning(
+                "Не удалось перечитать состояние кампании нейроответов, продолжаем с текущим снимком: job_id=%s error=%s",
+                job_id,
+                e,
+            )
+            return job
+
+    @staticmethod
+    def _copy_ai_reply_decision(
+        decision: AiReplyDecision,
+        *,
+        should_reply: Optional[bool] = None,
+        matched_trigger: Optional[str],
+        reply_text: Optional[str],
+    ) -> AiReplyDecision:
+        next_should_reply = decision.should_reply if should_reply is None else bool(should_reply)
+        if hasattr(decision, "model_copy"):
+            return decision.model_copy(
+                update={
+                    "should_reply": next_should_reply,
+                    "matched_trigger": matched_trigger,
+                    "reply_text": reply_text,
+                }
+            )
+
+        payload = decision.dict()
+        payload.update(
+            {
+                "should_reply": next_should_reply,
+                "matched_trigger": matched_trigger,
+                "reply_text": reply_text,
+            }
+        )
+        return AiReplyDecision(**payload)
+
+    async def _resolve_ai_reply_chat(
+        self,
+        *,
+        job_id: str,
+        session_ids: List[str],
+        chat_identifier: str,
+    ) -> tuple[Optional[TelegramClient], Any, Optional[str], Optional[Union[str, int]]]:
+        parsed_chat_identifier = self._parse_chat_identifier(chat_identifier)
+        if isinstance(parsed_chat_identifier, str) and not parsed_chat_identifier.strip():
+            return None, None, None, None
+
+        available_session_ids = self._filter_available_ai_reply_sessions(
+            session_ids,
+            job_id=job_id,
+            chat_id=chat_identifier,
+        )
+        for session_id in available_session_ids:
+            try:
+                client = await self.get_client(session_id)
+            except Exception as e:
+                logger.warning(
+                    "Пропуск session при мониторинге нейроответов: job_id=%s session_id=%s error=%s",
+                    job_id,
+                    session_id,
+                    e,
+                )
+                continue
+
+            try:
+                entity = await client.get_entity(parsed_chat_identifier)
+                return client, entity, session_id, parsed_chat_identifier
+            except FloodWaitError as e:
+                pause_seconds = self._pause_ai_reply_session(
+                    session_id,
+                    self._extract_flood_wait_seconds(e),
+                )
+                logger.warning(
+                    "FloodWait при получении entity чата: job_id=%s session_id=%s chat=%s wait=%s pause=%s",
+                    job_id,
+                    session_id,
+                    parsed_chat_identifier,
+                    e.seconds,
+                    pause_seconds,
+                )
+            except (ValueError, RPCError) as e:
+                error_kind = self._classify_ai_reply_error(e)
+                logger.warning(
+                    "Не удалось получить entity чата для нейроответов: job_id=%s session_id=%s chat=%s kind=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_chat_identifier,
+                    error_kind,
+                    e,
+                )
+            except Exception as e:
+                error_kind = self._classify_ai_reply_error(e)
+                logger.warning(
+                    "Неожиданная ошибка получения entity чата для нейроответов: job_id=%s session_id=%s chat=%s kind=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_chat_identifier,
+                    error_kind,
+                    e,
+                )
+
+        return None, None, None, parsed_chat_identifier
+
+    async def _collect_ai_reply_job_fresh_messages(
+        self,
+        job: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        job_id = str(job.get("id") or "").strip()
+        if not job_id or not bool(job.get("is_active")):
+            return {
+                "fresh_messages": [],
+                "successful_chats": 0,
+                "failed_chats": [],
+                "checkpoint_to_store": None,
+                "initialize_checkpoint": False,
+            }
+
+        session_ids = self._normalize_string_list(job.get("account_sessions"))
+        target_chats = [
+            self._normalize_chat_identifier(chat)
+            for chat in self._normalize_string_list(job.get("target_chats"))
+        ]
+
+        if not session_ids or not target_chats:
+            logger.warning(
+                "Пропуск мониторинга нейроответов: job_id=%s нет account_sessions или target_chats",
+                job_id,
+            )
+            return {
+                "fresh_messages": [],
+                "successful_chats": 0,
+                "failed_chats": [],
+                "checkpoint_to_store": None,
+                "initialize_checkpoint": False,
+            }
+
+        managed_user_ids = await self._collect_job_session_user_ids(session_ids)
+        stored_last_checked_at = self._normalize_datetime_value(job.get("last_checked_at"))
+        initialize_checkpoint = stored_last_checked_at is None
+        effective_last_checked_at = stored_last_checked_at or datetime.now(timezone.utc)
+        newest_fresh_message_at: Optional[datetime] = stored_last_checked_at
+        fresh_messages: List[Dict[str, Any]] = []
+        successful_chats = 0
+        failed_chats: List[str] = []
+
+        for chat_identifier in target_chats:
+            client, entity, session_id, parsed_chat_identifier = await self._resolve_ai_reply_chat(
+                job_id=job_id,
+                session_ids=session_ids,
+                chat_identifier=chat_identifier,
+            )
+            if client is None or entity is None or session_id is None or parsed_chat_identifier is None:
+                failed_chats.append(chat_identifier)
+                continue
+
+            try:
+                messages = await client.get_messages(
+                    entity,
+                    limit=1 if initialize_checkpoint else AI_REPLY_JOB_MESSAGES_LIMIT,
+                )
+                successful_chats += 1
+            except FloodWaitError as e:
+                pause_seconds = self._pause_ai_reply_session(
+                    session_id,
+                    self._extract_flood_wait_seconds(e),
+                )
+                logger.warning(
+                    "FloodWait при чтении сообщений чата: job_id=%s session_id=%s chat=%s wait=%s pause=%s",
+                    job_id,
+                    session_id,
+                    parsed_chat_identifier,
+                    e.seconds,
+                    pause_seconds,
+                )
+                failed_chats.append(chat_identifier)
+                continue
+            except (ValueError, RPCError) as e:
+                error_kind = self._classify_ai_reply_error(e)
+                logger.warning(
+                    "Не удалось получить сообщения чата для нейроответов: job_id=%s session_id=%s chat=%s kind=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_chat_identifier,
+                    error_kind,
+                    e,
+                )
+                failed_chats.append(chat_identifier)
+                continue
+            except Exception as e:
+                error_kind = self._classify_ai_reply_error(e)
+                logger.warning(
+                    "Неожиданная ошибка чтения сообщений чата для нейроответов: job_id=%s session_id=%s chat=%s kind=%s error=%s",
+                    job_id,
+                    session_id,
+                    parsed_chat_identifier,
+                    error_kind,
+                    e,
+                )
+                failed_chats.append(chat_identifier)
+                continue
+
+            if initialize_checkpoint:
+                continue
+
+            _, chat_name = self._extract_chat_meta(entity)
+            chat_fresh_messages: List[Dict[str, Any]] = []
+            for message in messages or []:
+                message_id = getattr(message, "id", None)
+                message_date = self._normalize_datetime_value(getattr(message, "date", None))
+                if message_id is None or message_date is None or message_date <= effective_last_checked_at:
+                    continue
+                if getattr(message, "out", False):
+                    continue
+                if getattr(message, "action", None) is not None:
+                    continue
+
+                sender_id = self._extract_message_sender_id(message)
+                if sender_id is not None and sender_id in managed_user_ids:
+                    continue
+
+                chat_fresh_messages.append(
+                    {
+                        "chat_id": str(parsed_chat_identifier),
+                        "chat_name": chat_name,
+                        "message_id": int(message_id),
+                        "sender_id": sender_id,
+                        "message_text": self._extract_ai_reply_message_text(message),
+                        "message_date": message_date.isoformat(),
+                        "session_id": session_id,
+                    }
+                )
+                if newest_fresh_message_at is None or message_date > newest_fresh_message_at:
+                    newest_fresh_message_at = message_date
+
+            if chat_fresh_messages:
+                chat_fresh_messages.sort(key=lambda item: item["message_id"])
+                fresh_messages.extend(chat_fresh_messages)
+                logger.info(
+                    "Найдены новые сообщения для кампании нейроответов: job_id=%s chat=%s count=%s",
+                    job_id,
+                    parsed_chat_identifier,
+                    len(chat_fresh_messages),
+                )
+
+        checkpoint_to_store: Optional[datetime] = None
+        if successful_chats > 0:
+            if initialize_checkpoint:
+                checkpoint_to_store = effective_last_checked_at
+            elif newest_fresh_message_at is not None:
+                checkpoint_to_store = newest_fresh_message_at
+
+        return {
+            "fresh_messages": fresh_messages,
+            "successful_chats": successful_chats,
+            "failed_chats": failed_chats,
+            "checkpoint_to_store": checkpoint_to_store,
+            "initialize_checkpoint": initialize_checkpoint,
+        }
+
+    async def poll_ai_reply_job_chats(
+        self,
+        job: Dict[str, Any],
+        *,
+        ai_reply_jobs_repo: Optional[AiReplyJobsRepo] = None,
+    ) -> List[Dict[str, Any]]:
+        job_id = str(job.get("id") or "").strip()
+        poll_result = await self._collect_ai_reply_job_fresh_messages(job)
+        fresh_messages = [
+            {
+                "chat_id": message["chat_id"],
+                "chat_name": message.get("chat_name"),
+                "message_id": message["message_id"],
+                "sender_id": message.get("sender_id"),
+                "message_text": message.get("message_text"),
+                "message_date": message.get("message_date"),
+                "session_id": message["session_id"],
+            }
+            for message in poll_result["fresh_messages"]
+        ]
+
+        if poll_result["successful_chats"] == 0:
+            return fresh_messages
+
+        if poll_result["failed_chats"]:
+            logger.warning(
+                "Не обновляем last_checked_at кампании нейроответов из-за ошибок чтения чатов: job_id=%s failed_chats=%s",
+                job_id,
+                ",".join(poll_result["failed_chats"]),
+            )
+            return fresh_messages
+
+        if ai_reply_jobs_repo is None:
+            return fresh_messages
+
+        checkpoint_to_store = poll_result["checkpoint_to_store"]
+        if checkpoint_to_store is None:
+            return fresh_messages
+
+        ai_reply_jobs_repo.update_last_checked_at(
+            job_id=job_id,
+            last_checked_at=checkpoint_to_store.isoformat(),
+        )
+        job["last_checked_at"] = checkpoint_to_store.isoformat()
+
+        if poll_result["initialize_checkpoint"]:
+            logger.info(
+                "Инициализирован checkpoint кампании нейроответов: job_id=%s last_checked_at=%s",
+                job_id,
+                checkpoint_to_store.isoformat(),
+            )
+
+        return fresh_messages
+
+    async def _publish_ai_reply(
+        self,
+        *,
+        job_id: str,
+        session_ids: List[str],
+        chat_id: str,
+        message_id: int,
+        reply_text: str,
+    ) -> Dict[str, Any]:
+        ordered_session_ids = self._get_ai_reply_session_order(job_id, session_ids)
+        parsed_chat_identifier = self._parse_chat_identifier(chat_id)
+        errors: List[str] = []
+
+        if not ordered_session_ids:
+            return {
+                "success": False,
+                "error": "Нет доступных account_sessions: все сессии временно на паузе после FloodWait или невалидны",
+            }
+
+        for session_id in ordered_session_ids:
+            try:
+                client = await self.get_client(session_id)
+                entity = await client.get_entity(parsed_chat_identifier)
+                sent_message = await client.send_message(
+                    entity,
+                    reply_text,
+                    reply_to=message_id,
+                )
+                return {
+                    "success": True,
+                    "session_id": session_id,
+                    "reply_message_id": getattr(sent_message, "id", None),
+                }
+            except FloodWaitError as e:
+                pause_seconds = self._pause_ai_reply_session(
+                    session_id,
+                    self._extract_flood_wait_seconds(e),
+                )
+                error_message = self._format_ai_reply_publish_error(
+                    error=e,
+                    session_id=session_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
+                logger.warning(
+                    "FloodWait при публикации нейроответа: job_id=%s session_id=%s chat=%s message_id=%s wait=%s pause=%s",
+                    job_id,
+                    session_id,
+                    chat_id,
+                    message_id,
+                    e.seconds,
+                    pause_seconds,
+                )
+                errors.append(error_message)
+            except (ValueError, RPCError) as e:
+                error_kind = self._classify_ai_reply_error(e)
+                error_message = self._format_ai_reply_publish_error(
+                    error=e,
+                    session_id=session_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
+                logger.warning(
+                    "Не удалось опубликовать нейроответ: job_id=%s session_id=%s chat=%s message_id=%s kind=%s error=%s",
+                    job_id,
+                    session_id,
+                    chat_id,
+                    message_id,
+                    error_kind,
+                    e,
+                )
+                errors.append(error_message)
+                if error_kind == "chat_unavailable":
+                    break
+            except Exception as e:
+                error_kind = self._classify_ai_reply_error(e)
+                error_message = self._format_ai_reply_publish_error(
+                    error=e,
+                    session_id=session_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
+                logger.warning(
+                    "Неожиданная ошибка публикации нейроответа: job_id=%s session_id=%s chat=%s message_id=%s kind=%s error=%s",
+                    job_id,
+                    session_id,
+                    chat_id,
+                    message_id,
+                    error_kind,
+                    e,
+                )
+                errors.append(error_message)
+                if error_kind == "chat_unavailable":
+                    break
+
+        return {
+            "success": False,
+            "error": "; ".join(errors) if errors else "Не удалось отправить reply",
+        }
+
+    async def generate_ai_reply_decision_with_fallback(
+        self,
+        *,
+        job_id: str,
+        chat_id: str,
+        message_id: int,
+        triggers: List[str],
+        reply_prompt: str,
+        message_text: str,
+        fallback_models: Optional[List[str]] = None,
+    ) -> Optional[AiReplyDecision]:
+        normalized_triggers = [trigger.strip() for trigger in triggers if trigger and trigger.strip()]
+        normalized_reply_prompt = (reply_prompt or "").strip()
+        normalized_message_text = (message_text or "").strip()
+
+        if not normalized_triggers or not normalized_reply_prompt or not normalized_message_text:
+            logger.warning(
+                "Недостаточно данных для генерации нейроответа: job_id=%s chat_id=%s message_id=%s",
+                job_id,
+                chat_id,
+                message_id,
+            )
+            return None
+
+        try:
+            decision = await self.openrouter_client.generate_structured_output_with_fallback(
+                schema_model=AiReplyDecision,
+                schema_name="telegram_ai_reply_decision",
+                system_prompt=AI_REPLY_DECISION_SYSTEM_PROMPT,
+                user_prompt=self._build_ai_reply_user_prompt(
+                    triggers=normalized_triggers,
+                    reply_prompt=normalized_reply_prompt,
+                    message_text=normalized_message_text,
+                ),
+                models=fallback_models,
+                max_tokens=400,
+                temperature=0.2,
+            )
+        except Exception as e:
+            logger.exception(
+                "Неожиданная ошибка structured output для нейроответа: job_id=%s chat_id=%s message_id=%s error=%s",
+                job_id,
+                chat_id,
+                message_id,
+                e,
+            )
+            return None
+
+        if decision is None:
+            logger.warning(
+                "Structured output для нейроответа не получен: job_id=%s chat_id=%s message_id=%s",
+                job_id,
+                chat_id,
+                message_id,
+            )
+            return None
+
+        matched_trigger = str(decision.matched_trigger or "").strip() or None
+        normalized_reply_text = self._normalize_ai_reply_text(str(decision.reply_text or ""))
+        should_reply = decision.should_reply
+        if should_reply is None:
+            should_reply = bool(matched_trigger or normalized_reply_text)
+            logger.info(
+                "Structured output для нейроответа не вернул should_reply, выводим его эвристически: job_id=%s chat_id=%s message_id=%s inferred_should_reply=%s",
+                job_id,
+                chat_id,
+                message_id,
+                should_reply,
+            )
+
+        if not should_reply:
+            return self._copy_ai_reply_decision(
+                decision,
+                should_reply=False,
+                matched_trigger=None,
+                reply_text=None,
+            )
+
+        if not normalized_reply_text:
+            logger.warning(
+                "Structured output вернул should_reply=true, но пустой reply_text после нормализации: job_id=%s chat_id=%s message_id=%s",
+                job_id,
+                chat_id,
+                message_id,
+            )
+            return None
+
+        return self._copy_ai_reply_decision(
+            decision,
+            should_reply=True,
+            matched_trigger=matched_trigger,
+            reply_text=normalized_reply_text,
+        )
+
+    async def process_ai_reply_jobs(
+        self,
+        job: Dict[str, Any],
+        *,
+        ai_reply_jobs_repo: Optional[AiReplyJobsRepo] = None,
+    ) -> List[Dict[str, Any]]:
+        repo = ai_reply_jobs_repo or AiReplyJobsRepo()
+        current_job = self._refresh_ai_reply_job(repo, job)
+        if current_job is None:
+            self._clear_ai_reply_job_runtime_state(str(job.get("id") or "").strip())
+            return []
+        if current_job is not job:
+            job.clear()
+            job.update(current_job)
+
+        job_id = str(job.get("id") or "").strip()
+        if not job_id or not bool(job.get("is_active")):
+            self._clear_ai_reply_job_runtime_state(job_id)
+            return []
+
+        session_ids = self._normalize_string_list(job.get("account_sessions"))
+        if not session_ids:
+            logger.warning(
+                "Пропуск обработки нейроответов: job_id=%s отсутствуют account_sessions",
+                job_id,
+            )
+            self._clear_ai_reply_job_runtime_state(job_id)
+            return []
+
+        poll_result = await self._collect_ai_reply_job_fresh_messages(job)
+        fresh_messages = poll_result["fresh_messages"]
+        processed_messages: List[Dict[str, Any]] = []
+        stopped_early = False
+        has_pending_retry = False
+
+        for item in fresh_messages:
+            chat_id = str(item["chat_id"])
+            chat_name = item.get("chat_name")
+            message_id = int(item["message_id"])
+            sender_id = item.get("sender_id")
+            message_text = str(item.get("message_text") or "")
+            message_date = item.get("message_date")
+
+            try:
+                current_job = self._refresh_ai_reply_job(repo, job)
+                if current_job is None or not bool(current_job.get("is_active")):
+                    logger.info(
+                        "Останавливаем обработку кампании нейроответов в текущем минутном цикле: job_id=%s",
+                        job_id,
+                    )
+                    self._clear_ai_reply_job_runtime_state(job_id)
+                    stopped_early = True
+                    break
+
+                if current_job is not job:
+                    job.clear()
+                    job.update(current_job)
+                session_ids = self._normalize_string_list(job.get("account_sessions"))
+                if not session_ids:
+                    logger.warning(
+                        "Останавливаем обработку нейроответов: job_id=%s после обновления пропали account_sessions",
+                        job_id,
+                    )
+                    self._clear_ai_reply_job_runtime_state(job_id)
+                    stopped_early = True
+                    break
+
+                existing_record = repo.get_history_record(
+                    job_id=job_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
+                existing_status = str((existing_record or {}).get("status") or "").strip()
+                if existing_record is not None and existing_status != "pending_retry":
+                    logger.info(
+                        "Пропуск уже обработанного сообщения нейроответов: job_id=%s chat_id=%s message_id=%s status=%s",
+                        job_id,
+                        chat_id,
+                        message_id,
+                        existing_record.get("status"),
+                    )
+                    processed_messages.append(
+                        {
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "status": "skipped",
+                        }
+                    )
+                    continue
+                if existing_status == "pending_retry":
+                    logger.info(
+                        "Повторная попытка обработки сообщения нейроответов после временной ошибки: job_id=%s chat_id=%s message_id=%s",
+                        job_id,
+                        chat_id,
+                        message_id,
+                    )
+
+                if not message_text.strip():
+                    repo.upsert_history_record(
+                        job_id=job_id,
+                        chat_id=chat_id,
+                        chat_name=chat_name,
+                        message_id=message_id,
+                        sender_id=sender_id,
+                        message_text=message_text,
+                        message_date=message_date,
+                        status="skipped",
+                        error="У сообщения нет текстовой части для анализа",
+                    )
+                    processed_messages.append(
+                        {
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "status": "skipped",
+                        }
+                    )
+                    continue
+
+                decision = await self.generate_ai_reply_decision_with_fallback(
+                    job_id=job_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    triggers=self._normalize_string_list(job.get("triggers")),
+                    reply_prompt=str(job.get("reply_prompt") or ""),
+                    message_text=message_text,
+                )
+                if decision is None:
+                    error_message = (
+                        "Не удалось получить structured output для решения по входящему сообщению"
+                    )
+                    repo.upsert_history_record(
+                        job_id=job_id,
+                        chat_id=chat_id,
+                        chat_name=chat_name,
+                        message_id=message_id,
+                        sender_id=sender_id,
+                        message_text=message_text,
+                        message_date=message_date,
+                        status="pending_retry",
+                        error=error_message,
+                    )
+                    has_pending_retry = True
+                    processed_messages.append(
+                        {
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "status": "pending_retry",
+                            "error": error_message,
+                        }
+                    )
+                    continue
+
+                if not decision.should_reply:
+                    repo.upsert_history_record(
+                        job_id=job_id,
+                        chat_id=chat_id,
+                        chat_name=chat_name,
+                        message_id=message_id,
+                        sender_id=sender_id,
+                        message_text=message_text,
+                        message_date=message_date,
+                        status="skipped",
+                    )
+                    processed_messages.append(
+                        {
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "status": "skipped",
+                        }
+                    )
+                    continue
+
+                reply_text = self._normalize_ai_reply_text(str(decision.reply_text or ""))
+                if not reply_text:
+                    error_message = "Structured output вернул пустой reply_text после очистки"
+                    self._record_ai_reply_failure(
+                        repo,
+                        job_id=job_id,
+                        chat_id=chat_id,
+                        chat_name=chat_name,
+                        message_id=message_id,
+                        sender_id=sender_id,
+                        message_text=message_text,
+                        message_date=message_date,
+                        matched_trigger=decision.matched_trigger,
+                        error_message=error_message,
+                    )
+                    processed_messages.append(
+                        {
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "status": "failed",
+                            "error": error_message,
+                        }
+                    )
+                    continue
+
+                publish_result = await self._publish_ai_reply(
+                    job_id=job_id,
+                    session_ids=session_ids,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    reply_text=reply_text,
+                )
+
+                if publish_result["success"]:
+                    repo.upsert_history_record(
+                        job_id=job_id,
+                        chat_id=chat_id,
+                        chat_name=chat_name,
+                        message_id=message_id,
+                        sender_id=sender_id,
+                        message_text=message_text,
+                        message_date=message_date,
+                        matched_trigger=decision.matched_trigger,
+                        reply_message_id=publish_result.get("reply_message_id"),
+                        reply_text=reply_text,
+                        processed_session_id=publish_result.get("session_id"),
+                        status="replied",
+                    )
+                    processed_messages.append(
+                        {
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "status": "replied",
+                            "session_id": publish_result.get("session_id"),
+                            "reply_message_id": publish_result.get("reply_message_id"),
+                        }
+                    )
+                    continue
+
+                self._record_ai_reply_failure(
+                    repo,
+                    job_id=job_id,
+                    chat_id=chat_id,
+                    chat_name=chat_name,
+                    message_id=message_id,
+                    sender_id=sender_id,
+                    message_text=message_text,
+                    message_date=message_date,
+                    matched_trigger=decision.matched_trigger,
+                    error_message=publish_result["error"],
+                )
+                processed_messages.append(
+                    {
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "status": "failed",
+                        "error": publish_result["error"],
+                    }
+                )
+            except Exception as e:
+                error_message = f"Ошибка обработки сообщения нейроответов: {e}"
+                logger.exception(
+                    "Неожиданная ошибка обработки сообщения нейроответов: job_id=%s chat_id=%s message_id=%s error=%s",
+                    job_id,
+                    chat_id,
+                    message_id,
+                    e,
+                )
+                self._record_ai_reply_failure(
+                    repo,
+                    job_id=job_id,
+                    chat_id=chat_id,
+                    chat_name=chat_name,
+                    message_id=message_id,
+                    sender_id=sender_id,
+                    message_text=message_text,
+                    message_date=message_date,
+                    error_message=error_message,
+                )
+                processed_messages.append(
+                    {
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "status": "failed",
+                        "error": error_message,
+                    }
+                )
+
+        if stopped_early:
+            return processed_messages
+
+        if poll_result["successful_chats"] > 0 and not poll_result["failed_chats"] and not has_pending_retry:
+            checkpoint_to_store = poll_result["checkpoint_to_store"]
+            if checkpoint_to_store is not None:
+                repo.update_last_checked_at(
+                    job_id=job_id,
+                    last_checked_at=checkpoint_to_store.isoformat(),
+                )
+                job["last_checked_at"] = checkpoint_to_store.isoformat()
+
+                if poll_result["initialize_checkpoint"]:
+                    logger.info(
+                        "Инициализирован checkpoint кампании нейроответов: job_id=%s last_checked_at=%s",
+                        job_id,
+                        checkpoint_to_store.isoformat(),
+                    )
+        elif has_pending_retry:
+            logger.warning(
+                "Не обновляем last_checked_at после process_ai_reply_jobs из-за pending_retry сообщений: job_id=%s",
+                job_id,
+            )
+        elif poll_result["failed_chats"]:
+            logger.warning(
+                "Не обновляем last_checked_at после process_ai_reply_jobs из-за ошибок чтения чатов: job_id=%s failed_chats=%s",
+                job_id,
+                ",".join(poll_result["failed_chats"]),
+            )
+
+        return processed_messages
 
     def _build_reaction_job_signature(self, job: Dict[str, Any]) -> str:
         session_part = ",".join(sorted(job.get("account_sessions") or []))

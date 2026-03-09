@@ -4,6 +4,7 @@ import sys
 import types
 import unittest
 from unittest.mock import patch
+from pydantic import BaseModel
 
 
 def _install_dependency_stubs() -> None:
@@ -228,9 +229,178 @@ class OpenRouterClientTests(unittest.IsolatedAsyncioTestCase):
             messages=[{"role": "user", "content": "test"}],
             max_tokens=300,
             temperature=0.7,
+            reasoning={"effort": "none", "exclude": True},
         )
 
         self.assertEqual(payload["reasoning"], {"effort": "none", "exclude": True})
+
+    def test_build_payload_can_omit_reasoning(self):
+        _, ai_client_module = _reload_openrouter_modules()
+
+        payload = ai_client_module.OpenRouterClient._build_payload(
+            model="openrouter/free",
+            messages=[{"role": "user", "content": "test"}],
+            max_tokens=300,
+            temperature=0.7,
+            reasoning=None,
+        )
+
+        self.assertNotIn("reasoning", payload)
+
+    async def test_generate_comment_retries_with_reasoning_enabled_when_provider_requires_it(self):
+        _, ai_client_module = _reload_openrouter_modules()
+        FakeAsyncClient.queued_responses = [
+            FakeResponse(
+                400,
+                text='{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.","code":400}}',
+            ),
+            FakeResponse(
+                200,
+                json_body={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "Ответ после включения reasoning",
+                            }
+                        }
+                    ]
+                },
+            ),
+        ]
+
+        with patch.object(ai_client_module.httpx, "AsyncClient", FakeAsyncClient):
+            client = ai_client_module.OpenRouterClient(
+                api_key="test-key",
+                models=["openrouter/free"],
+                retries_per_model=2,
+            )
+            result = await client.generate_comment_with_fallback(
+                system_prompt="system",
+                user_prompt="user",
+                post_text="post",
+            )
+
+        self.assertEqual(result, "Ответ после включения reasoning")
+        self.assertEqual(len(FakeAsyncClient.requests), 2)
+        self.assertEqual(
+            FakeAsyncClient.requests[0]["json"]["reasoning"],
+            {"effort": "none", "exclude": True},
+        )
+        self.assertEqual(
+            FakeAsyncClient.requests[1]["json"]["reasoning"],
+            {"enabled": True, "exclude": True},
+        )
+
+    async def test_generate_structured_output_returns_validated_model(self):
+        _, ai_client_module = _reload_openrouter_modules()
+
+        class ReplyDecision(BaseModel):
+            should_reply: bool
+            matched_trigger: str | None
+            reply_text: str | None
+
+        FakeAsyncClient.queued_responses = [
+            FakeResponse(
+                200,
+                json_body={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"should_reply":true,'
+                                    '"matched_trigger":"Сколько стоит?",'
+                                    '"reply_text":"Цена 1000 руб."}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+        ]
+
+        with patch.object(ai_client_module.httpx, "AsyncClient", FakeAsyncClient):
+            client = ai_client_module.OpenRouterClient(
+                api_key="test-key",
+                structured_models=["openrouter/free"],
+            )
+            result = await client.generate_structured_output_with_fallback(
+                schema_model=ReplyDecision,
+                schema_name="reply_decision",
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.should_reply)
+        self.assertEqual(result.matched_trigger, "Сколько стоит?")
+        self.assertEqual(result.reply_text, "Цена 1000 руб.")
+        self.assertEqual(FakeAsyncClient.requests[0]["json"]["response_format"]["type"], "json_schema")
+        self.assertEqual(
+            FakeAsyncClient.requests[0]["json"]["provider"],
+            {"require_parameters": True},
+        )
+        self.assertEqual(
+            FakeAsyncClient.requests[0]["json"]["plugins"],
+            [{"id": "response-healing"}],
+        )
+        self.assertEqual(
+            FakeAsyncClient.requests[0]["json"]["reasoning"],
+            {"enabled": True, "exclude": True},
+        )
+
+    async def test_generate_structured_output_retries_same_model_after_429(self):
+        _, ai_client_module = _reload_openrouter_modules()
+
+        class ReplyDecision(BaseModel):
+            should_reply: bool
+            matched_trigger: str | None
+            reply_text: str | None
+
+        FakeAsyncClient.queued_responses = [
+            FakeResponse(
+                429,
+                text='{"error":{"message":"Provider returned error","code":429}}',
+            ),
+            FakeResponse(
+                200,
+                json_body={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"should_reply":true,'
+                                    '"matched_trigger":"цена",'
+                                    '"reply_text":"1000 руб."}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            ),
+        ]
+
+        with patch.object(ai_client_module.httpx, "AsyncClient", FakeAsyncClient):
+            client = ai_client_module.OpenRouterClient(
+                api_key="test-key",
+                structured_models=["openrouter/free"],
+                retries_per_model=2,
+            )
+            result = await client.generate_structured_output_with_fallback(
+                schema_model=ReplyDecision,
+                schema_name="reply_decision",
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.should_reply)
+        self.assertEqual(result.reply_text, "1000 руб.")
+        self.assertEqual(
+            [request["json"]["model"] for request in FakeAsyncClient.requests],
+            ["openrouter/free", "openrouter/free"],
+        )
 
 
 if __name__ == "__main__":

@@ -30,10 +30,12 @@ SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_KEY=<service_role_or_anon_key>
 OPENROUTER_API_KEY=<openrouter_api_key>
 OPENROUTER_MODELS=openrouter/free
+OPENROUTER_STRUCTURED_MODELS=openrouter/free
 OPENROUTER_RETRIES_PER_MODEL=2
 ```
 
 `OPENROUTER_MODELS` опциональна. Если нужна жёсткая привязка к конкретным моделям/роутерам OpenRouter, передайте список через запятую.
+`OPENROUTER_STRUCTURED_MODELS` опциональна. Используется для задач со structured output; если не задана, берётся значение `OPENROUTER_MODELS`.
 `OPENROUTER_RETRIES_PER_MODEL` опциональна. По умолчанию клиент повторяет один и тот же роутер/модель два раза, если получает пустой `200 OK`, таймаут или невалидный JSON.
 
 ## Supabase schema
@@ -51,6 +53,7 @@ OPENROUTER_RETRIES_PER_MODEL=2
 9. `009_add_ai_comment_jobs_rls.sql`
 10. `010_add_ai_comment_job_indexes.sql`
 11. `011_add_ai_comment_job_posts_comment_text.sql`
+12. `012_create_ai_reply_jobs.sql`
 
 Если уже получили ошибку `PGRST205` для `public.warmup_jobs`, выполните минимум `004_create_warmup_jobs.sql` и `006_fix_warmup_jobs_user_fk.sql` в SQL Editor Supabase.
 

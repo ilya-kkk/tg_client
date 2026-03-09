@@ -1592,6 +1592,111 @@ class AiCommentJobHistoryPostPreviewOut(BaseModel):
     post: MessageInfo
 
 
+class AiReplyJobCreate(BaseModel):
+    """Запрос на создание кампании нейроответов."""
+    name: str = Field(..., min_length=1, max_length=120)
+    account_sessions: list[str] = Field(..., min_length=1)
+    target_chats: list[str] = Field(..., min_length=1)
+    triggers: list[str] = Field(..., min_length=1)
+    reply_prompt: str = Field(..., min_length=1)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Название кампании не может быть пустым")
+        return value
+
+    @field_validator("account_sessions", "target_chats", "triggers")
+    @classmethod
+    def validate_non_empty_items(cls, v: list[str]) -> list[str]:
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Список не может быть пустым")
+        return values
+
+    @field_validator("reply_prompt")
+    @classmethod
+    def validate_reply_prompt(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Промпт ответа не может быть пустым")
+        return value
+
+
+class AiReplyJobUpdate(BaseModel):
+    """Запрос на обновление кампании нейроответов."""
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    account_sessions: Optional[list[str]] = Field(None, min_length=1)
+    target_chats: Optional[list[str]] = Field(None, min_length=1)
+    triggers: Optional[list[str]] = Field(None, min_length=1)
+    reply_prompt: Optional[str] = Field(None, min_length=1)
+    is_active: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_optional_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            raise ValueError("Название кампании не может быть пустым")
+        return value
+
+    @field_validator("account_sessions", "target_chats", "triggers")
+    @classmethod
+    def validate_optional_non_empty_items(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return None
+        values = [item.strip() for item in v if item and item.strip()]
+        if not values:
+            raise ValueError("Список не может быть пустым")
+        return values
+
+    @field_validator("reply_prompt")
+    @classmethod
+    def validate_optional_reply_prompt(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            raise ValueError("Промпт ответа не может быть пустым")
+        return value
+
+
+class AiReplyJobOut(BaseModel):
+    """Выходная модель кампании нейроответов."""
+    id: str
+    user_id: str
+    name: str
+    account_sessions: list[str]
+    target_chats: list[str]
+    triggers: list[str]
+    reply_prompt: str
+    is_active: bool
+    last_checked_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AiReplyJobMessageOut(BaseModel):
+    """Выходная модель истории обработки сообщений в кампании нейроответов."""
+    chat_id: str
+    chat_name: Optional[str] = None
+    message_id: int
+    sender_id: Optional[int] = None
+    message_text: Optional[str] = None
+    message_date: Optional[datetime] = None
+    matched_trigger: Optional[str] = None
+    reply_message_id: Optional[int] = None
+    reply_text: Optional[str] = None
+    processed_session_id: Optional[str] = None
+    status: Literal["replied", "skipped", "failed"]
+    error: Optional[str] = None
+    created_at: datetime
+
+
 class WarmupJobCreate(BaseModel):
     """Запрос на создание кампании прогрева."""
     name: str = Field(..., min_length=1, max_length=120)

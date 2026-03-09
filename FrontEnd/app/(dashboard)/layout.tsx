@@ -22,6 +22,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           <Link href="/ai-commenting" className="nav-link">
             Нейрокомментарии
           </Link>
+          <Link href="/ai-replies" className="nav-link">
+            Нейроответы
+          </Link>
           <Link href="/warmup" className="nav-link">
             Прогрев
           </Link>
