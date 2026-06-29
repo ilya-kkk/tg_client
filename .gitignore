@@ -6,6 +6,7 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 ENV/
 build/
 develop-eggs/
@@ -27,6 +28,13 @@ wheels/
 sessions/
 *.session
 *.session-journal
+
+# Local SQLite storage
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
 
 # Environment variables
 .env

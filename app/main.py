@@ -1,6 +1,11 @@
-from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse, Response
 from contextlib import asynccontextmanager
+from pathlib import Path
+import csv
+import io
+from typing import List
+
+from fastapi import FastAPI, HTTPException, Query, status
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from app.models import (
     LoginRequest,
     LoginResponse,
@@ -33,6 +38,7 @@ from app.models import (
     SearchMessagesResponse,
     FilterMessagesRequest,
     FilterMessagesResponse,
+    MessageViewsResponse,
     MarkMessagesReadRequest,
     MarkMessagesReadResponse,
     PinMessageRequest,
@@ -41,6 +47,8 @@ from app.models import (
     MessageReactionResponse,
     ChatInfo,
     FolderChatsRequest,
+    LeadSearchFolderRequest,
+    LeadSearchFolderResponse,
     ArchiveChatRequest,
     CreateChatRequest,
     InviteUsersRequest,
@@ -95,15 +103,43 @@ from app.models import (
     BotInlineButtonClickResponse,
     SubscribeChannelResponse,
     UnsubscribeChannelResponse,
+    ChannelSearchResponse,
+    JoinChannelResponse,
+    ChannelCommentsStatusResponse,
+    ChannelCommentsResponse,
     PublishChannelPostResponse,
     EditChannelPostResponse,
     DeleteChannelPostsResponse,
+    CollectPostsRequest,
+    CollectPostsResponse,
+    CollectedPostItem,
+    CollectCommentsRequest,
+    CollectCommentsResponse,
+    CollectedCommentItem,
+    ChannelHealthResponse,
+    DiscussionScoreResponse,
+    BusinessFitResponse,
+    CampaignScoreResponse,
+    RankedChannelsResponse,
+    RankedChannelItem,
+    OpportunityPostsResponse,
+    OpportunityPostItem,
     SessionInfo,
     SessionListResponse,
     SessionStatusResponse,
     DeleteSessionResponse,
+    CompanyCreate,
+    CompanyUpdate,
+    CompanyInfo,
+    CompanyResponse,
+    CompanyListResponse,
+    DeleteCompanyResponse,
+    LeadCreate,
+    LeadInfo,
+    LeadResponse,
+    LeadListResponse,
 )
-from app.supabase_client import SessionRepo
+from app.storage import ChannelAnalyticsRepo, CompanyRepo, LeadRepo, SessionRepo
 from app.telegram_client import MultiSessionManager
 import logging
 
@@ -112,6 +148,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 client_manager: MultiSessionManager | None = None
 session_repo: SessionRepo | None = None
+company_repo: CompanyRepo | None = None
+lead_repo: LeadRepo | None = None
+channel_analytics_repo: ChannelAnalyticsRepo | None = None
+INDEX_HTML_PATH = Path(__file__).parent / "static" / "index.html"
 
 
 tags_metadata = [
@@ -147,19 +187,36 @@ tags_metadata = [
         "name": "account",
         "description": "Управление текущим аккаунтом",
     },
+    {
+        "name": "companies",
+        "description": "Настройка компаний для CRM",
+    },
+    {
+        "name": "leads",
+        "description": "Локальная база найденных Telegram-лидов",
+    },
 ]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    global client_manager, session_repo
+    global client_manager, session_repo, company_repo, lead_repo, channel_analytics_repo
 
     # При старте приложения
-    logger.info("Инициализация SessionRepo и MultiSessionManager...")
+    logger.info("Инициализация локального storage и MultiSessionManager...")
     session_repo = SessionRepo()
-    client_manager = MultiSessionManager(session_repo=session_repo)
+    company_repo = CompanyRepo()
+    lead_repo = LeadRepo()
+    channel_analytics_repo = ChannelAnalyticsRepo()
+    client_manager = MultiSessionManager(
+        session_repo=session_repo,
+        channel_analytics_repo=channel_analytics_repo,
+    )
     app.state.session_repo = session_repo
+    app.state.company_repo = company_repo
+    app.state.lead_repo = lead_repo
+    app.state.channel_analytics_repo = channel_analytics_repo
     app.state.client_manager = client_manager
     
     yield
@@ -179,24 +236,29 @@ app = FastAPI(
 )
 
 
-@app.get("/", tags=["system"])
-async def root():
-    """Корневой endpoint"""
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def crm_frontend():
+    """Минимальный frontend для настройки компаний."""
+    return HTMLResponse(INDEX_HTML_PATH.read_text(encoding="utf-8"))
+
+
+@app.get("/api/status", tags=["system"])
+async def api_status():
+    """Статус API и локального storage."""
     authorized = client_manager.is_connected() if client_manager is not None else False
-    supabase_status = "unavailable"
+    storage_status = "unavailable"
     if session_repo is not None:
         try:
-            # Быстрый запрос для проверки доступности Supabase.
             session_repo.list_all()
-            supabase_status = "ok"
+            storage_status = "ok"
         except Exception as e:
-            logger.warning("Supabase health-check failed: %s", e)
+            logger.warning("SQLite health-check failed: %s", e)
 
     return {
         "message": "Telegram REST API",
         "status": "running",
         "authorized": authorized,
-        "supabase": supabase_status,
+        "storage": storage_status,
     }
 
 
@@ -215,6 +277,165 @@ async def bind_session_context(request, call_next):
         return await call_next(request)
     finally:
         client_manager.default_session_id = original_session_id
+
+
+@app.get(
+    "/api/companies",
+    response_model=CompanyListResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["companies"],
+)
+async def list_companies():
+    """Возвращает список компаний."""
+    if company_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CompanyRepo не инициализирован",
+        )
+    rows = company_repo.list_all()
+    companies = [CompanyInfo(**row) for row in rows]
+    return CompanyListResponse(success=True, companies=companies, total=len(companies))
+
+
+@app.post(
+    "/api/companies",
+    response_model=CompanyResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["companies"],
+)
+async def create_company(request: CompanyCreate):
+    """Создает компанию."""
+    if company_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CompanyRepo не инициализирован",
+        )
+    row = company_repo.create(request.model_dump())
+    return CompanyResponse(
+        success=True,
+        company=CompanyInfo(**row),
+        message="Компания создана",
+    )
+
+
+@app.get(
+    "/api/companies/{company_id}",
+    response_model=CompanyResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["companies"],
+)
+async def get_company(company_id: int):
+    """Возвращает компанию по ID."""
+    if company_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CompanyRepo не инициализирован",
+        )
+    row = company_repo.get(company_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Компания #{company_id} не найдена",
+        )
+    return CompanyResponse(
+        success=True,
+        company=CompanyInfo(**row),
+        message="Компания найдена",
+    )
+
+
+@app.patch(
+    "/api/companies/{company_id}",
+    response_model=CompanyResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["companies"],
+)
+async def update_company(company_id: int, request: CompanyUpdate):
+    """Обновляет компанию."""
+    if company_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CompanyRepo не инициализирован",
+        )
+    row = company_repo.update(
+        company_id,
+        request.model_dump(exclude_unset=True),
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Компания #{company_id} не найдена",
+        )
+    return CompanyResponse(
+        success=True,
+        company=CompanyInfo(**row),
+        message="Компания обновлена",
+    )
+
+
+@app.delete(
+    "/api/companies/{company_id}",
+    response_model=DeleteCompanyResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["companies"],
+)
+async def delete_company(company_id: int):
+    """Удаляет компанию."""
+    if company_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CompanyRepo не инициализирован",
+        )
+    deleted = company_repo.delete(company_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Компания #{company_id} не найдена",
+        )
+    return DeleteCompanyResponse(
+        success=True,
+        company_id=company_id,
+        message="Компания удалена",
+    )
+
+
+@app.get(
+    "/api/leads",
+    response_model=LeadListResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["leads"],
+)
+async def list_leads(status_filter: str | None = Query(None, alias="status")):
+    """Возвращает сохраненных Telegram-лидов."""
+    if lead_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LeadRepo не инициализирован",
+        )
+    rows = lead_repo.list_all(status=status_filter)
+    leads = [LeadInfo(**row) for row in rows]
+    return LeadListResponse(success=True, leads=leads, total=len(leads))
+
+
+@app.post(
+    "/api/leads",
+    response_model=LeadResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["leads"],
+)
+async def save_lead(request: LeadCreate):
+    """Создает или обновляет Telegram-лида по url."""
+    if lead_repo is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LeadRepo не инициализирован",
+        )
+    row = lead_repo.upsert(request.model_dump())
+    return LeadResponse(
+        success=True,
+        lead=LeadInfo(**row),
+        message="Лид сохранен",
+    )
 
 
 @app.get(
@@ -441,7 +662,7 @@ async def get_chats(session_id: str, limit: int = 100):
         )
     
     try:
-        dialogs = await client_manager.get_dialogs(limit=limit)
+        dialogs = await client_manager.get_dialogs(session_id=session_id, limit=limit)
         chats = [ChatInfo(**dialog) for dialog in dialogs]
         
         return ChatsResponse(
@@ -497,6 +718,51 @@ async def get_folders(session_id: str):
         )
     except Exception as e:
         logger.error(f"Ошибка при получении списка папок: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/sessions/{session_id}/folders/lead-search",
+    response_model=LeadSearchFolderResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["chats"],
+)
+async def upsert_lead_search_folder(session_id: str, request: LeadSearchFolderRequest):
+    """
+    Создает/обновляет Telegram-папку Lead Search 1 и добавляет туда каналы.
+    """
+    if not client_manager.is_connected(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify"
+        )
+
+    try:
+        result = await client_manager.upsert_lead_search_folder(
+            channel_identifiers=request.channel_identifiers,
+            folder_name=request.folder_name,
+            session_id=session_id,
+        )
+        added = [ChatInfo(**chat) for chat in result["added"]]
+        return LeadSearchFolderResponse(
+            success=True,
+            folder_name=result["folder_name"],
+            folder_id=result["folder_id"],
+            added=added,
+            skipped=result["skipped"],
+            total_added=len(added),
+            message=result["message"],
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении папки лидов: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}"
@@ -1381,6 +1647,167 @@ async def reset_account_sessions(session_id: str):
         )
 
 
+@app.get(
+    "/sessions/{session_id}/channels/search",
+    response_model=ChannelSearchResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def search_channels(session_id: str, query: str, limit: int = 20):
+    """
+    Ищет публичные каналы и супергруппы в Telegram.
+    """
+    if not client_manager.is_connected(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify"
+        )
+
+    try:
+        result = await client_manager.search_channels(
+            query=query,
+            limit=limit,
+            session_id=session_id,
+        )
+        return ChannelSearchResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при поиске каналов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.post(
+    "/sessions/{session_id}/channels/join",
+    response_model=JoinChannelResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def join_channel(session_id: str, request: SubscribeChannelRequest):
+    """
+    Входит в публичный канал или отправляет заявку по private invite link.
+    """
+    if not client_manager.is_connected(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify"
+        )
+
+    try:
+        result = await client_manager.join_channel(
+            request.channel_identifier,
+            session_id=session_id,
+        )
+        return JoinChannelResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при входе в канал: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/sessions/{session_id}/channels/comments/status",
+    response_model=ChannelCommentsStatusResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def get_channel_comments_status(
+    session_id: str,
+    channel_identifier: str,
+    message_id: int | None = None,
+):
+    """
+    Проверяет, включены ли комментарии у канала или конкретного поста.
+    """
+    if not client_manager.is_connected(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify"
+        )
+
+    try:
+        result = await client_manager.get_channel_comments_status(
+            channel_identifier=channel_identifier,
+            message_id=message_id,
+            session_id=session_id,
+        )
+        return ChannelCommentsStatusResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при проверке комментариев: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
+@app.get(
+    "/sessions/{session_id}/channels/posts/comments",
+    response_model=ChannelCommentsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def get_post_comments(
+    session_id: str,
+    channel_identifier: str,
+    message_id: int,
+    limit: int = 50,
+):
+    """
+    Получает комментарии к конкретному посту канала.
+    """
+    if not client_manager.is_connected(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify"
+        )
+
+    try:
+        result = await client_manager.get_post_comments(
+            channel_identifier=channel_identifier,
+            message_id=message_id,
+            limit=limit,
+            session_id=session_id,
+        )
+        comments = [MessageInfo(**m) for m in result["comments"]]
+        return ChannelCommentsResponse(
+            success=True,
+            channel_id=result["channel_id"],
+            channel_name=result.get("channel_name"),
+            message_id=result["message_id"],
+            comments=comments,
+            total=len(comments),
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении комментариев: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}"
+        )
+
+
 @app.post(
     "/sessions/{session_id}/channels/subscribe",
     response_model=SubscribeChannelResponse,
@@ -1398,7 +1825,10 @@ async def subscribe_channel(session_id: str, request: SubscribeChannelRequest):
         )
 
     try:
-        result = await client_manager.subscribe_channel(request.channel_identifier)
+        result = await client_manager.subscribe_channel(
+            request.channel_identifier,
+            session_id=session_id,
+        )
         return SubscribeChannelResponse(**result)
     except ValueError as e:
         raise HTTPException(
@@ -1430,7 +1860,10 @@ async def unsubscribe_channel(session_id: str, request: SubscribeChannelRequest)
         )
 
     try:
-        result = await client_manager.unsubscribe_channel(request.channel_identifier)
+        result = await client_manager.unsubscribe_channel(
+            request.channel_identifier,
+            session_id=session_id,
+        )
         return UnsubscribeChannelResponse(**result)
     except ValueError as e:
         raise HTTPException(
@@ -1584,6 +2017,508 @@ async def delete_channel_posts(session_id: str, request: DeleteChannelPostsReque
         )
     except Exception as e:
         logger.error(f"Ошибка при удалении постов канала: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/channels/{channel_id}/collect-posts",
+    response_model=CollectPostsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def collect_channel_posts(
+    channel_id: str,
+    request: CollectPostsRequest,
+    session_id: str | None = Query(None),
+):
+    """
+    Собирает посты канала, сохраняет метрики для аналитики и обновляет профиль.
+    """
+    active_session_id = session_id or client_manager.default_session_id
+    if not client_manager or not client_manager.is_connected(active_session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify",
+        )
+    if not channel_analytics_repo:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ChannelAnalyticsRepo не инициализирован",
+        )
+
+    try:
+        result = await client_manager.collect_channel_posts(
+            channel_identifier=channel_id,
+            limit=request.limit,
+            exclude_forwards=request.exclude_forwards,
+            exclude_ads=request.exclude_ads,
+            session_id=active_session_id,
+        )
+        posts = [CollectedPostItem(**item) for item in result["posts"]]
+        return CollectPostsResponse(
+            success=True,
+            channel_id=result["channel_id"],
+            channel_username=result["channel_username"],
+            posts_analyzed=result["posts_analyzed"],
+            posts=posts,
+            message=result["message"],
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при сборе постов: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/channels/{channel_id}/collect-comments",
+    response_model=CollectCommentsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def collect_channel_comments(
+    channel_id: str,
+    request: CollectCommentsRequest,
+    session_id: str | None = Query(None),
+):
+    """
+    Собирает комментарии к последним постам канала для аналитики.
+    """
+    active_session_id = session_id or client_manager.default_session_id
+    if not client_manager or not client_manager.is_connected(active_session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify",
+        )
+    if not channel_analytics_repo:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ChannelAnalyticsRepo не инициализирован",
+        )
+
+    try:
+        result = await client_manager.collect_channel_comments(
+            channel_identifier=channel_id,
+            posts_limit=request.posts_limit,
+            comments_per_post=request.comments_per_post,
+            session_id=active_session_id,
+        )
+        comments = [CollectedCommentItem(**item) for item in result["comments"]]
+        return CollectCommentsResponse(
+            success=True,
+            channel_id=result["channel_id"],
+            channel_username=result["channel_username"],
+            posts_considered=result["posts_considered"],
+            total_comments=result["total_comments"],
+            comments=comments,
+            message=result["message"],
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при сборе комментариев: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/channels/{channel_id}/refresh-metrics",
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def refresh_channel_metrics(channel_id: str, session_id: str | None = Query(None)):
+    """
+    Полный пересчёт метрик: сбор постов, комментариев, health, discussion,
+    business fit и campaign score.
+    """
+    active_session_id = session_id or client_manager.default_session_id
+    if not client_manager or not client_manager.is_connected(active_session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify",
+        )
+    if not channel_analytics_repo:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ChannelAnalyticsRepo не инициализирован",
+        )
+
+    try:
+        result = await client_manager.refresh_channel_metrics(
+            channel_identifier=channel_id,
+            session_id=active_session_id,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при пересчёте метрик: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/channels/{channel_id}/score-health",
+    response_model=ChannelHealthResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def score_channel_health(channel_id: str, session_id: str | None = Query(None)):
+    """
+    Считает метрики просмотра и вовлечения для канала.
+    """
+    active_session_id = session_id or client_manager.default_session_id
+    if not client_manager or not client_manager.is_connected(active_session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify",
+        )
+
+    try:
+        result = await client_manager.score_channel_health(
+            channel_identifier=channel_id,
+            session_id=active_session_id,
+        )
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("message", "Недостаточно данных"),
+            )
+        return ChannelHealthResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при расчёте channel health: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/channels/{channel_id}/score-discussion",
+    response_model=DiscussionScoreResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def score_channel_discussion(channel_id: str, session_id: str | None = Query(None)):
+    """
+    Считает метрики комментариев и обсуждаемости канала.
+    """
+    active_session_id = session_id or client_manager.default_session_id
+    if not client_manager or not client_manager.is_connected(active_session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify",
+        )
+
+    try:
+        result = await client_manager.score_channel_discussion(
+            channel_identifier=channel_id,
+            session_id=active_session_id,
+        )
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("message", "Недостаточно данных"),
+            )
+        return DiscussionScoreResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при расчёте discussion score: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/channels/{channel_id}/score-business-fit",
+    response_model=BusinessFitResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def score_business_fit(channel_id: str, session_id: str | None = Query(None)):
+    """
+    Оценивает нишу, монетизацию и pain markers в канале.
+    """
+    active_session_id = session_id or client_manager.default_session_id
+    if not client_manager or not client_manager.is_connected(active_session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify",
+        )
+
+    try:
+        result = await client_manager.score_business_fit(
+            channel_identifier=channel_id,
+            session_id=active_session_id,
+        )
+        return BusinessFitResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при расчёте business fit: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.post(
+    "/channels/{channel_id}/score-campaign",
+    response_model=CampaignScoreResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def score_campaign(channel_id: str, session_id: str | None = Query(None)):
+    """
+    Считает итоговый campaign score и рекомендует действие.
+    """
+    active_session_id = session_id or client_manager.default_session_id
+    if not client_manager or not client_manager.is_connected(active_session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify",
+        )
+
+    try:
+        result = await client_manager.score_campaign(
+            channel_identifier=channel_id,
+            session_id=active_session_id,
+        )
+        return CampaignScoreResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при расчёте campaign score: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/channels/ranked",
+    response_model=RankedChannelsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def get_ranked_channels(
+    sort: str = Query("campaign_score"),
+    min_score: float = Query(0.0, ge=0.0),
+    recommended_action: str | None = None,
+):
+    """
+    Возвращает ранжированный список каналов по campaign_score и параметрам фильтра.
+    """
+    if not client_manager or not channel_analytics_repo:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analytics repository не инициализирован",
+        )
+
+    try:
+        rows = channel_analytics_repo.list_ranked_channels(
+            min_score=min_score,
+            sort=sort,
+            recommended_action=recommended_action,
+        )
+        channels: List[RankedChannelItem] = [
+            RankedChannelItem(
+                title=row.get("title"),
+                username=row.get("channel_username"),
+                url=row.get("url"),
+                subscribers_count=row.get("subscribers_count"),
+                median_views_30=row.get("median_views"),
+                view_rate=row.get("view_rate"),
+                posts_per_week=row.get("posts_per_week"),
+                comments_enabled=bool(row.get("comments_enabled")),
+                median_comments_30=row.get("median_comments"),
+                comment_rate=row.get("comment_rate"),
+                unique_commenters_30=row.get("unique_commenters"),
+                niche=row.get("niche"),
+                monetization_signals=row.get("monetization_signals"),
+                lead_score=float(row.get("campaign_score") or 0.0),
+                campaign_score=float(row.get("campaign_score") or 0.0),
+                recommended_action=row.get("recommended_action"),
+                reason=row.get("reason"),
+                last_post_at=row.get("last_post_at"),
+            )
+            for row in rows
+        ]
+        return RankedChannelsResponse(
+            success=True,
+            channels=channels,
+            total=len(channels),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при выдаче ranked channels: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/channels/{channel_id}/opportunity-posts",
+    response_model=OpportunityPostsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def get_opportunity_posts(channel_id: str, session_id: str | None = Query(None)):
+    """
+    Возвращает список постов канала с лучшей вероятностью для захода комментариями.
+    """
+    active_session_id = session_id or client_manager.default_session_id
+    if not client_manager or not client_manager.is_connected(active_session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify",
+        )
+
+    try:
+        result = await client_manager.opportunity_posts(
+            channel_identifier=channel_id,
+            session_id=active_session_id,
+        )
+        posts = [OpportunityPostItem(**item) for item in result["posts"]]
+        return OpportunityPostsResponse(
+            success=True,
+            channel_id=result["channel_id"],
+            channel_username=result["channel_username"],
+            posts=posts,
+            total=result["total"],
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка получения opportunity posts: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/channels/export-campaign-analysis",
+    status_code=status.HTTP_200_OK,
+    tags=["channels"],
+)
+async def export_campaign_analysis(
+    min_score: float = Query(0.0, ge=0.0),
+    format: str = Query("csv"),
+    recommended_action: str | None = None,
+):
+    """
+    Экспортирует ранжированный список в CSV.
+    """
+    if not client_manager or not channel_analytics_repo:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Analytics repository не инициализирован",
+        )
+    if format.lower() != "csv":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Поддерживается только format=csv",
+        )
+
+    try:
+        rows = channel_analytics_repo.list_ranked_channels(
+            min_score=min_score,
+            sort="campaign_score",
+            recommended_action=recommended_action,
+        )
+        output = io.StringIO()
+        writer = csv.writer(output)
+        header = [
+            "title",
+            "username",
+            "url",
+            "subscribers_count",
+            "median_views_30",
+            "view_rate",
+            "posts_per_week",
+            "comments_enabled",
+            "median_comments_30",
+            "comment_rate",
+            "unique_commenters_30",
+            "niche",
+            "monetization_signals",
+            "campaign_score",
+            "recommended_action",
+            "reason",
+            "suggested_ai_product",
+        ]
+        writer.writerow(header)
+        for row in rows:
+            writer.writerow(
+                [
+                    row.get("title"),
+                    row.get("channel_username"),
+                    row.get("url"),
+                    row.get("subscribers_count") or 0,
+                    row.get("median_views") or 0,
+                    row.get("view_rate") or 0,
+                    row.get("posts_per_week") or 0,
+                    int(bool(row.get("comments_enabled"))),
+                    row.get("median_comments") or 0,
+                    row.get("comment_rate") or 0,
+                    row.get("unique_commenters") or 0,
+                    row.get("niche"),
+                    row.get("monetization_signals"),
+                    row.get("campaign_score") or 0,
+                    row.get("recommended_action"),
+                    row.get("reason"),
+                    row.get("suggested_ai_product"),
+                ]
+            )
+
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": "attachment; filename=campaign_analysis.csv"
+            },
+        )
+    except Exception as e:
+        logger.error(f"Ошибка экспорта campaign analysis: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",
@@ -2165,6 +3100,43 @@ async def set_message_reaction(session_id: str, request: MessageReactionRequest)
         )
     except Exception as e:
         logger.error(f"Ошибка при установке реакции: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Внутренняя ошибка сервера: {str(e)}",
+        )
+
+
+@app.get(
+    "/sessions/{session_id}/messages/views",
+    response_model=MessageViewsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["messages"],
+)
+async def get_message_views(session_id: str, channel_identifier: str, message_id: int):
+    """
+    Возвращает число просмотров сообщения в канале.
+
+    channel_identifier может быть:
+    - Username канала (например, @channel)
+    - ID канала/супергруппы
+    - Ссылка t.me/...
+    """
+    if not client_manager.is_connected(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Необходима авторизация. Используйте /sessions/{session_id}/auth/login и /sessions/{session_id}/auth/verify",
+        )
+
+    try:
+        result = await client_manager.get_message_views(channel_identifier, message_id)
+        return MessageViewsResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при получении просмотров сообщения: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Внутренняя ошибка сервера: {str(e)}",

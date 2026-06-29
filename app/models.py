@@ -566,6 +566,39 @@ class FolderChatsRequest(BaseModel):
         return v
 
 
+class LeadSearchFolderRequest(BaseModel):
+    """Запрос на добавление каналов в Telegram-папку"""
+    channel_identifiers: List[str] = Field(..., description="Username/ID/link каналов", min_length=1)
+    folder_name: str = Field("Lead Search 1", description="Название папки", min_length=1, max_length=64)
+
+    @field_validator("channel_identifiers")
+    @classmethod
+    def validate_channel_identifiers(cls, v: List[str]) -> List[str]:
+        cleaned = [x.strip() for x in v if x and x.strip()]
+        if not cleaned:
+            raise ValueError("Нужно передать хотя бы один канал")
+        return cleaned
+
+    @field_validator("folder_name")
+    @classmethod
+    def validate_folder_name(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("folder_name не может быть пустым")
+        return value
+
+
+class LeadSearchFolderResponse(BaseModel):
+    """Ответ на обновление Telegram-папки лидов"""
+    success: bool
+    folder_name: str
+    folder_id: int
+    added: List[ChatInfo]
+    skipped: List[str]
+    total_added: int
+    message: str
+
+
 class ArchiveChatRequest(BaseModel):
     """Запрос на архивирование/разархивирование чата"""
     chat_identifier: str = Field(..., description="Username чата (@username) или ID чата")
@@ -817,7 +850,10 @@ class UpdateProfilePhotoRequest(BaseModel):
 
 class SubscribeChannelRequest(BaseModel):
     """Запрос на подписку на канал"""
-    channel_identifier: str = Field(..., description="Username канала (@channel) или ID канала")
+    channel_identifier: str = Field(
+        ...,
+        description="Username/ID канала, public link или private invite link",
+    )
 
     @field_validator("channel_identifier")
     @classmethod
@@ -920,6 +956,15 @@ class MessageReactionResponse(BaseModel):
     chat_id: Optional[int] = None
     message_id: int
     reaction: Optional[str] = None
+    message: str
+
+
+class MessageViewsResponse(BaseModel):
+    """Ответ с количеством просмотров сообщения"""
+    success: bool
+    chat_id: int
+    message_id: int
+    views: Optional[int] = None
     message: str
 
 
@@ -1279,6 +1324,268 @@ class UnsubscribeChannelResponse(BaseModel):
     message: str
 
 
+class ChannelSearchResult(BaseModel):
+    """Найденный канал/супергруппа"""
+    id: int
+    name: str
+    type: str
+    username: Optional[str] = None
+    participants_count: Optional[int] = None
+    is_verified: bool = False
+    is_scam: bool = False
+    is_fake: bool = False
+    is_private: bool = False
+    join_request: bool = False
+
+
+class ChannelSearchResponse(BaseModel):
+    """Ответ поиска каналов"""
+    success: bool
+    query: str
+    channels: List[ChannelSearchResult]
+    total: int
+
+
+class JoinChannelResponse(BaseModel):
+    """Ответ на вход в канал или заявку"""
+    success: bool
+    status: str
+    channel_id: Optional[int] = None
+    title: Optional[str] = None
+    username: Optional[str] = None
+    participants_count: Optional[int] = None
+    request_needed: bool = False
+    message: str
+
+
+class ChannelCommentsStatusResponse(BaseModel):
+    """Ответ со статусом комментариев канала или поста"""
+    success: bool
+    channel_id: Optional[int] = None
+    channel_name: Optional[str] = None
+    linked_chat_id: Optional[int] = None
+    linked_chat_name: Optional[str] = None
+    has_discussion_group: bool = False
+    message_id: Optional[int] = None
+    has_comments: bool = False
+    comments_count: int = 0
+    message: str
+
+
+class ChannelCommentsResponse(BaseModel):
+    """Ответ со списком комментариев к посту"""
+    success: bool
+    channel_id: int
+    channel_name: Optional[str] = None
+    message_id: int
+    comments: List[MessageInfo]
+    total: int
+
+
+class CollectPostsRequest(BaseModel):
+    """Параметры сбора постов канала для аналитики."""
+
+    limit: int = Field(50, ge=1, le=300)
+    exclude_forwards: bool = True
+    exclude_ads: bool = True
+
+
+class CollectedPostItem(BaseModel):
+    """Запись собранного поста."""
+
+    channel_id: int
+    channel_username: str
+    message_id: int
+    post_url: Optional[str] = None
+    date: Optional[str] = None
+    text: Optional[str] = None
+    views: int = 0
+    forwards: int = 0
+    replies_count: int = 0
+    reactions_count: int = 0
+    has_media: bool = False
+    has_link: bool = False
+    is_forward: bool = False
+    is_ad_like: bool = False
+
+
+class CollectPostsResponse(BaseModel):
+    """Ответ после сборки постов канала."""
+
+    success: bool
+    channel_id: int
+    channel_username: str
+    posts_analyzed: int
+    posts: List[CollectedPostItem]
+    message: str
+
+
+class CollectCommentsRequest(BaseModel):
+    """Параметры сбора комментариев к постам."""
+
+    posts_limit: int = Field(20, ge=1, le=120)
+    comments_per_post: int = Field(50, ge=1, le=200)
+
+
+class CollectedCommentItem(BaseModel):
+    """Запись собранного комментария."""
+
+    channel_id: int
+    post_message_id: int
+    comment_id: int
+    comment_text: str
+    comment_date: Optional[str] = None
+    commenter_id_hash: Optional[str] = None
+    commenter_username: Optional[str] = None
+    is_author_reply: bool = False
+    is_spam_like: bool = False
+
+
+class CollectCommentsResponse(BaseModel):
+    """Ответ после сбора комментариев."""
+
+    success: bool
+    channel_id: int
+    channel_username: str
+    posts_considered: int
+    total_comments: int
+    comments: List[CollectedCommentItem]
+    message: str
+
+
+class ChannelHealthResponse(BaseModel):
+    """Итоговое health-оценивание канала."""
+
+    success: bool
+    channel_id: int
+    channel_username: str
+    subscribers_count: Optional[int] = None
+    posts_analyzed: int
+    median_views_30: float
+    avg_views_30: float
+    view_rate: float
+    posts_per_week: float
+    views_cv: float
+    median_reactions: float
+    reaction_rate: float
+    median_forwards: float
+    forward_rate: float
+    last_post_at: Optional[str] = None
+    channel_health_score: float
+
+
+class DiscussionScoreResponse(BaseModel):
+    """Итоговое discussion-оценивание канала."""
+
+    success: bool
+    channel_id: int
+    channel_username: str
+    comments_enabled: bool
+    posts_with_comments: int
+    median_comments_30: float
+    avg_comments_30: float
+    comment_rate: float
+    unique_commenters_30: int
+    author_replies_count: int
+    author_reply_rate: float
+    spam_comments_count: int
+    spam_ratio: float
+    discussion_score: float
+
+
+class BusinessFitResponse(BaseModel):
+    """Итоговое business-fit оценивание канала."""
+
+    success: bool
+    channel_id: int
+    channel_username: str
+    niche_fit_score: float
+    monetization_signal_score: float
+    pain_markers_score: float
+    ai_product_potential_score: float
+    business_fit_score: float
+    reason: str
+    suggested_ai_product: Optional[str] = None
+
+
+class CampaignScoreResponse(BaseModel):
+    """Итоговый score для запуска комментариев и кампании."""
+
+    success: bool
+    channel_id: int
+    channel_username: str
+    lead_score: float
+    campaign_score: float
+    recommended_action: str
+    reason: str
+    niche_fit_score: float
+    monetization_signal_score: float
+    audience_attention_score: float
+    comments_enabled_score: float
+    comment_rate_score: float
+    median_views_score: float
+    view_rate_score: float
+    discussion_score: float
+    business_fit_score: float
+
+
+class RankedChannelItem(BaseModel):
+    """Позиция в ранжированном списке каналов."""
+
+    title: Optional[str] = None
+    username: Optional[str] = None
+    url: Optional[str] = None
+    subscribers_count: Optional[int] = None
+    median_views_30: Optional[float] = None
+    view_rate: Optional[float] = None
+    posts_per_week: Optional[float] = None
+    comments_enabled: bool = False
+    median_comments_30: Optional[float] = None
+    comment_rate: Optional[float] = None
+    unique_commenters_30: Optional[int] = None
+    niche: Optional[str] = None
+    monetization_signals: Optional[str] = None
+    lead_score: float
+    campaign_score: float
+    recommended_action: Optional[str] = None
+    reason: Optional[str] = None
+    last_post_at: Optional[str] = None
+
+
+class RankedChannelsResponse(BaseModel):
+    """Список отсортированных каналов."""
+
+    success: bool
+    channels: List[RankedChannelItem]
+    total: int
+
+
+class OpportunityPostItem(BaseModel):
+    """Предложение для кампании на уровне поста."""
+
+    post_url: Optional[str] = None
+    message_id: int
+    date: Optional[str] = None
+    text_preview: Optional[str] = None
+    views: int = 0
+    comments_count: int = 0
+    reactions_count: int = 0
+    post_relevance_score: float = 0.0
+    pain_markers: Optional[str] = None
+    opportunity_score: float = 0.0
+    suggested_angle: Optional[str] = None
+
+
+class OpportunityPostsResponse(BaseModel):
+    """Список лучших постов для захода в канал."""
+
+    success: bool
+    channel_id: int
+    channel_username: str
+    posts: List[OpportunityPostItem]
+    total: int
+
+
 class PublishChannelPostResponse(BaseModel):
     """Ответ на публикацию поста"""
     success: bool
@@ -1303,3 +1610,181 @@ class DeleteChannelPostsResponse(BaseModel):
     channel_id: Optional[int] = None
     deleted_count: int
     message: str
+
+
+class CompanyCreate(BaseModel):
+    """Запрос на создание компании"""
+    name: str = Field(..., description="Название компании", min_length=1, max_length=200)
+    website: Optional[str] = Field(None, description="Сайт компании", max_length=500)
+    telegram_chat: Optional[str] = Field(
+        None,
+        description="Username или ID Telegram-чата компании",
+        max_length=200,
+    )
+    description: Optional[str] = Field(None, description="Краткое описание", max_length=2000)
+    notes: Optional[str] = Field(None, description="Внутренние заметки", max_length=5000)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Название компании не может быть пустым")
+        return value
+
+    @field_validator("website", "telegram_chat", "description", "notes")
+    @classmethod
+    def strip_text(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class CompanyUpdate(BaseModel):
+    """Запрос на обновление компании"""
+    name: Optional[str] = Field(None, description="Название компании", min_length=1, max_length=200)
+    website: Optional[str] = Field(None, description="Сайт компании", max_length=500)
+    telegram_chat: Optional[str] = Field(
+        None,
+        description="Username или ID Telegram-чата компании",
+        max_length=200,
+    )
+    description: Optional[str] = Field(None, description="Краткое описание", max_length=2000)
+    notes: Optional[str] = Field(None, description="Внутренние заметки", max_length=5000)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        if not value:
+            raise ValueError("Название компании не может быть пустым")
+        return value
+
+    @field_validator("website", "telegram_chat", "description", "notes")
+    @classmethod
+    def strip_text(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class CompanyInfo(BaseModel):
+    """Информация о компании"""
+    id: int
+    name: str
+    website: Optional[str] = None
+    telegram_chat: Optional[str] = None
+    description: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CompanyResponse(BaseModel):
+    """Ответ с одной компанией"""
+    success: bool
+    company: CompanyInfo
+    message: str
+
+
+class CompanyListResponse(BaseModel):
+    """Ответ со списком компаний"""
+    success: bool
+    companies: List[CompanyInfo]
+    total: int
+
+
+class DeleteCompanyResponse(BaseModel):
+    """Ответ на удаление компании"""
+    success: bool
+    company_id: int
+    message: str
+
+
+class LeadCreate(BaseModel):
+    """Запрос на сохранение найденного Telegram-лида"""
+    title: str = Field(..., description="Название канала", min_length=1, max_length=300)
+    username: Optional[str] = Field(None, description="Username без @ или с @", max_length=200)
+    url: str = Field(..., description="Ссылка t.me", min_length=1, max_length=500)
+    niche: Optional[str] = Field(None, description="Тематика / ниша", max_length=500)
+    subscribers: Optional[int] = Field(None, description="Количество подписчиков, если видно", ge=0)
+    is_public: bool = Field(True, description="Открытый канал")
+    has_comments: bool = Field(False, description="Есть комментарии")
+    monetization_signals: Optional[str] = Field(None, description="Признаки монетизации", max_length=3000)
+    lead_score: int = Field(..., description="Lead score 1-10", ge=1, le=10)
+    reason: Optional[str] = Field(None, description="Почему канал может быть лидом", max_length=3000)
+    suggested_ai_product: Optional[str] = Field(None, description="Идея AI-продукта", max_length=3000)
+    status: str = Field("new", description="new, maybe, subscribed, skipped", max_length=32)
+    subscribed: bool = Field(False, description="Подписались ли на канал")
+    folder: Optional[str] = Field(None, description="Папка Telegram", max_length=64)
+
+    @field_validator("title", "url", "status")
+    @classmethod
+    def strip_required_text(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("Поле не может быть пустым")
+        return value
+
+    @field_validator("username")
+    @classmethod
+    def strip_username(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        if value.startswith("@"):
+            value = value[1:]
+        return value or None
+
+    @field_validator(
+        "niche",
+        "monetization_signals",
+        "reason",
+        "suggested_ai_product",
+        "folder",
+    )
+    @classmethod
+    def strip_text(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        value = v.strip()
+        return value or None
+
+
+class LeadInfo(BaseModel):
+    """Сохраненный Telegram-лид"""
+    id: int
+    title: str
+    username: Optional[str] = None
+    url: str
+    niche: Optional[str] = None
+    subscribers: Optional[int] = None
+    is_public: bool
+    has_comments: bool
+    monetization_signals: Optional[str] = None
+    lead_score: int
+    reason: Optional[str] = None
+    suggested_ai_product: Optional[str] = None
+    status: str
+    subscribed: bool
+    folder: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class LeadResponse(BaseModel):
+    """Ответ с одним лидом"""
+    success: bool
+    lead: LeadInfo
+    message: str
+
+
+class LeadListResponse(BaseModel):
+    """Ответ со списком лидов"""
+    success: bool
+    leads: List[LeadInfo]
+    total: int

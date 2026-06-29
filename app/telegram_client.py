@@ -1,9 +1,13 @@
 import asyncio
 import base64
 import binascii
+import hashlib
+import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from statistics import mean, median, pstdev
 from typing import Optional, List, Dict, Any
+from urllib.parse import parse_qs, urlparse
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import (
@@ -11,7 +15,12 @@ from telethon.errors import (
     PhoneCodeInvalidError,
     PhoneNumberInvalidError,
     FloodWaitError,
-    RPCError
+    RPCError,
+    InviteHashEmptyError,
+    InviteHashExpiredError,
+    InviteHashInvalidError,
+    InviteRequestSentError,
+    UserAlreadyParticipantError,
 )
 from telethon.tl import functions, types
 from telethon.tl.types import (
@@ -25,7 +34,8 @@ from telethon.tl.types import (
     DocumentAttributeSticker,
 )
 from app.config import API_ID, API_HASH
-from app.supabase_client import SessionRepo
+from app.storage import SessionRepo
+from app.storage import ChannelAnalyticsRepo
 
 
 class MultiSessionManager:
@@ -34,14 +44,95 @@ class MultiSessionManager:
     def __init__(
         self,
         session_repo: Optional[SessionRepo] = None,
+        channel_analytics_repo: Optional[ChannelAnalyticsRepo] = None,
         default_session_id: str = "default",
     ):
         self.session_repo = session_repo
         self.default_session_id = default_session_id
+        self.channel_analytics_repo = channel_analytics_repo
         self._clients: Dict[str, TelegramClient] = {}
         self._auth_clients: Dict[str, TelegramClient] = {}
         self._authorized_sessions: set[str] = set()
         self._auth_state: Dict[str, Dict[str, str]] = {}
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            if value is None:
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_iso(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
+
+    @staticmethod
+    def _coerce_channel_username(entity: Channel, channel_identifier: str) -> str:
+        username = getattr(entity, "username", None)
+        if username:
+            return str(username).lstrip("@")
+        normalized_id = MultiSessionManager._channel_api_id(entity)
+        if normalized_id:
+            return str(normalized_id)
+        return channel_identifier.lstrip("@").strip() or "unknown"
+
+    @staticmethod
+    def _build_channel_url(channel_username: str) -> Optional[str]:
+        if not channel_username:
+            return None
+        if channel_username.startswith("-100") or channel_username.lstrip("-").isdigit():
+            return None
+        return f"https://t.me/{channel_username}"
+
+    @staticmethod
+    def _build_post_url(channel_identifier: str, message_id: int) -> Optional[str]:
+        if not channel_identifier:
+            return None
+        if channel_identifier.startswith("-100") or channel_identifier.lstrip("-").isdigit():
+            return None
+        return f"https://t.me/{channel_identifier.strip('/')}/{int(message_id)}"
+
+    @staticmethod
+    def _contains_http(text: Optional[str]) -> bool:
+        if not text:
+            return False
+        return bool(re.search(r"https?://|t\.me/", text, flags=re.IGNORECASE))
+
+    @staticmethod
+    def _count_keywords(text: str, keywords: List[str]) -> List[str]:
+        lowered = (text or "").lower()
+        return [kw for kw in keywords if kw in lowered]
+
+    @staticmethod
+    def _score_threshold(value: float, mapping: List[tuple[float, float]]) -> float:
+        """Возвращает score по убывающим порогам [(min_value, score)]"""
+        for threshold, score in mapping:
+            if value >= threshold:
+                return score
+        return mapping[-1][1]
+
+    @staticmethod
+    def _hash_text(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
     def _get_session_repo(self) -> SessionRepo:
         if self.session_repo is None:
@@ -68,6 +159,254 @@ class MultiSessionManager:
         if not value:
             return self.default_session_id
         return value
+
+    async def _get_session_client(self, session_id: Optional[str]) -> TelegramClient:
+        sid = self._normalize_session_id(session_id)
+        return await self.get_client(sid)
+
+    @staticmethod
+    def _channel_api_id(entity: Any) -> int:
+        entity_id = int(getattr(entity, "id", 0) or 0)
+        if isinstance(entity, Channel):
+            return int(f"-100{entity_id}")
+        return entity_id
+
+    @staticmethod
+    def _extract_invite_hash(channel_identifier: str) -> Optional[str]:
+        value = channel_identifier.strip()
+        if not value:
+            return None
+
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+        if parsed.scheme == "tg" and parsed.netloc == "join":
+            invite = parse_qs(parsed.query).get("invite", [""])[0].strip()
+            return invite or None
+
+        path = parsed.path.strip("/")
+        if parsed.netloc in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
+            parts = [part for part in path.split("/") if part]
+            if not parts:
+                return None
+            if parts[0].startswith("+"):
+                return parts[0][1:] or None
+            if parts[0] == "joinchat" and len(parts) > 1:
+                return parts[1] or None
+
+        if value.startswith("+"):
+            return value[1:] or None
+        if "joinchat/" in value:
+            return value.rsplit("joinchat/", 1)[-1].split("/", 1)[0] or None
+
+        return None
+
+    @staticmethod
+    def _normalize_channel_identifier(channel_identifier: str) -> str:
+        value = channel_identifier.strip()
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+        if parsed.netloc in {"t.me", "telegram.me", "www.t.me", "www.telegram.me"}:
+            parts = [part for part in parsed.path.strip("/").split("/") if part]
+            if parts and parts[0] not in {"c", "s", "joinchat"} and not parts[0].startswith("+"):
+                return f"@{parts[0]}"
+        return value
+
+    @staticmethod
+    def _message_media_type(msg: Any) -> Optional[str]:
+        if not getattr(msg, "media", None):
+            return None
+        if isinstance(msg.media, MessageMediaPhoto):
+            return "photo"
+        if isinstance(msg.media, MessageMediaDocument):
+            doc = msg.media.document
+            attrs = getattr(doc, "attributes", []) or []
+            for attr in attrs:
+                if isinstance(attr, DocumentAttributeVideo):
+                    return "video"
+                if isinstance(attr, DocumentAttributeAudio):
+                    return "voice" if getattr(attr, "voice", False) else "audio"
+                if isinstance(attr, DocumentAttributeSticker):
+                    return "sticker"
+            return "document"
+        return "other"
+
+    def _message_to_dict(self, msg: Any, fallback_chat_id: Optional[int] = None) -> Dict[str, Any]:
+        sender_id = self._extract_sender_id(msg)
+
+        msg_chat_id: Optional[int] = fallback_chat_id
+        if getattr(msg, "peer_id", None) is not None:
+            peer = msg.peer_id
+            if hasattr(peer, "channel_id"):
+                msg_chat_id = int(f"-100{peer.channel_id}")
+            elif hasattr(peer, "chat_id"):
+                msg_chat_id = peer.chat_id
+            elif hasattr(peer, "user_id"):
+                msg_chat_id = peer.user_id
+
+        has_media = bool(getattr(msg, "media", None))
+        return {
+            "id": getattr(msg, "id", 0),
+            "chat_id": msg_chat_id if msg_chat_id is not None else 0,
+            "sender_id": sender_id,
+            "text": getattr(msg, "message", None) or "",
+            "date": msg.date.isoformat() if getattr(msg, "date", None) else "",
+            "is_out": bool(getattr(msg, "out", False)),
+            "has_media": has_media,
+            "media_type": self._message_media_type(msg),
+            "media_id": msg.id if has_media else None,
+        }
+
+    def _extract_sender_id(self, obj: Any) -> Optional[int]:
+        sender_id: Optional[int] = None
+        if getattr(obj, "sender_id", None) is not None:
+            try:
+                sender_id = int(obj.sender_id)
+            except (TypeError, ValueError):
+                sender_id = None
+        elif getattr(obj, "from_id", None) is not None:
+            from_id = obj.from_id
+            if isinstance(from_id, types.PeerUser):
+                sender_id = self._safe_int(from_id.user_id)
+            elif isinstance(from_id, types.PeerChat):
+                sender_id = self._safe_int(from_id.chat_id)
+            elif isinstance(from_id, types.PeerChannel):
+                sender_id = self._safe_int(from_id.channel_id)
+        return sender_id
+
+    @staticmethod
+    def _count_post_reactions(msg: Any) -> int:
+        reactions = getattr(msg, "reactions", None)
+        if not reactions:
+            return 0
+        total = 0
+        for item in getattr(reactions, "results", []) or []:
+            total += int(getattr(item, "count", 0) or 0)
+        return total
+
+    @staticmethod
+    def _is_ad_like(text: Optional[str]) -> bool:
+        lowered = (text or "").lower()
+        ad_signals = [
+            "реклама",
+            "купите",
+            "подпишитесь",
+            "заказать",
+            "спецпредложение",
+            "акция",
+            "распродажа",
+            "скидк",
+            "бонус",
+            "платный",
+            "тариф",
+            "продаю",
+            "продам",
+            "скидка",
+        ]
+        return any(signal in lowered for signal in ad_signals)
+
+    @staticmethod
+    def _is_spam_like_comment(text: str) -> bool:
+        lowered = (text or "").lower()
+        if not lowered.strip():
+            return True
+        spam_signals = [
+            "подписывайся",
+            "подпишись",
+            "купить",
+            "заказать",
+            "аккаунт",
+            "перейди",
+            "скид",
+            "https://",
+            "http://",
+            "сайт",
+            "бот",
+        ]
+        if any(signal in lowered for signal in spam_signals):
+            return True
+        links = len(re.findall(r"https?://", lowered))
+        return links >= 2
+
+    @staticmethod
+    def _normalize_comment_text(text: Optional[str]) -> str:
+        if not text:
+            return ""
+        text = text.replace("\n", " ").strip()
+        return " ".join(text.split())[:800]
+
+    @staticmethod
+    def _channel_result(entity: Channel) -> Dict[str, Any]:
+        return {
+            "id": MultiSessionManager._channel_api_id(entity),
+            "name": getattr(entity, "title", None) or "Channel",
+            "type": "channel" if getattr(entity, "broadcast", False) else "supergroup",
+            "username": getattr(entity, "username", None),
+            "participants_count": getattr(entity, "participants_count", None),
+            "is_verified": bool(getattr(entity, "verified", False)),
+            "is_scam": bool(getattr(entity, "scam", False)),
+            "is_fake": bool(getattr(entity, "fake", False)),
+            "is_private": not bool(getattr(entity, "username", None)),
+            "join_request": bool(getattr(entity, "join_request", False)),
+        }
+
+    @staticmethod
+    def _dialog_filters_from_result(filters_result: Any) -> List[Any]:
+        if hasattr(filters_result, "filters"):
+            return list(filters_result.filters or [])
+        if isinstance(filters_result, list):
+            return filters_result
+        return []
+
+    @staticmethod
+    def _dialog_filter_title(dialog_filter: Any) -> str:
+        title = getattr(dialog_filter, "title", "") or ""
+        return getattr(title, "text", title) or ""
+
+    @staticmethod
+    def _input_peer_key(peer: Any) -> tuple[str, int]:
+        if isinstance(peer, types.InputPeerChannel):
+            return ("channel", int(peer.channel_id))
+        if isinstance(peer, types.InputPeerChat):
+            return ("chat", int(peer.chat_id))
+        if isinstance(peer, types.InputPeerUser):
+            return ("user", int(peer.user_id))
+        return (peer.__class__.__name__, int(getattr(peer, "id", 0) or 0))
+
+    @staticmethod
+    def _chat_info_from_entity(entity: Any) -> Dict[str, Any]:
+        if isinstance(entity, Channel):
+            return {
+                "id": MultiSessionManager._channel_api_id(entity),
+                "name": getattr(entity, "title", None) or "Channel",
+                "type": "channel" if getattr(entity, "broadcast", False) else "supergroup",
+                "username": getattr(entity, "username", None),
+                "unread_count": 0,
+                "is_pinned": False,
+                "is_verified": bool(getattr(entity, "verified", False)),
+                "is_scam": bool(getattr(entity, "scam", False)),
+                "is_fake": bool(getattr(entity, "fake", False)),
+            }
+        if isinstance(entity, Chat):
+            return {
+                "id": int(getattr(entity, "id", 0) or 0),
+                "name": getattr(entity, "title", None) or "Group",
+                "type": "group",
+                "username": None,
+                "unread_count": 0,
+                "is_pinned": False,
+                "is_verified": False,
+                "is_scam": False,
+                "is_fake": False,
+            }
+        return {
+            "id": int(getattr(entity, "id", 0) or 0),
+            "name": getattr(entity, "username", None) or "Chat",
+            "type": None,
+            "username": getattr(entity, "username", None),
+            "unread_count": 0,
+            "is_pinned": False,
+            "is_verified": False,
+            "is_scam": False,
+            "is_fake": False,
+        }
 
     async def get_client(self, session_id: str) -> TelegramClient:
         """Возвращает авторизованный клиент для session_id."""
@@ -1869,6 +2208,49 @@ class MultiSessionManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
+    async def get_message_views(self, channel_identifier: str, message_id: int) -> Dict[str, Any]:
+        """
+        Возвращает количество просмотров сообщения в канале.
+
+        Args:
+            channel_identifier: Username канала (например, @channel) или ID канала
+            message_id: ID сообщения (поста) в канале
+
+        Returns:
+            Словарь с количеством просмотров
+        """
+        if not self.client:
+            await self.get_client(self.default_session_id)
+
+        if not self._is_connected:
+            raise ValueError("Необходима авторизация")
+
+        try:
+            entity = await self.client.get_entity(self._normalize_channel_identifier(channel_identifier))
+            if not isinstance(entity, Channel):
+                raise ValueError("Переданный идентификатор должен ссылаться на канал или супергруппу")
+
+            message = await self.client.get_messages(entity, ids=message_id)
+            if isinstance(message, list):
+                message = message[0] if message else None
+            if not message:
+                raise ValueError("Сообщение не найдено")
+
+            views = getattr(message, "views", None)
+            return {
+                "success": True,
+                "chat_id": getattr(entity, "id", None),
+                "message_id": message.id,
+                "views": views,
+                "message": "Количество просмотров получено",
+            }
+        except ValueError as e:
+            raise ValueError(f"Канал или сообщение не найдены: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
     async def mark_messages_read(
         self, chat_identifier: str, max_id: Optional[int] = None
     ) -> Dict[str, Any]:
@@ -2606,7 +2988,1322 @@ class MultiSessionManager:
         except RPCError as e:
             raise ValueError(f"Ошибка Telegram API: {e.message}")
 
-    async def subscribe_channel(self, channel_identifier: str) -> Dict[str, Any]:
+    async def search_channels(
+        self,
+        query: str,
+        limit: int = 20,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Ищет публичные каналы и супергруппы через Telegram global search."""
+        client = await self._get_session_client(session_id)
+        query_value = query.strip()
+        if not query_value:
+            raise ValueError("query не может быть пустым")
+
+        try:
+            result = await client(functions.contacts.SearchRequest(q=query_value, limit=limit))
+            channels = [
+                self._channel_result(chat)
+                for chat in getattr(result, "chats", []) or []
+                if isinstance(chat, Channel)
+            ]
+            return {
+                "success": True,
+                "query": query_value,
+                "channels": channels,
+                "total": len(channels),
+            }
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def join_channel(
+        self,
+        channel_identifier: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Входит в публичный канал или отправляет заявку по private invite link."""
+        client = await self._get_session_client(session_id)
+        value = channel_identifier.strip()
+        if not value:
+            raise ValueError("channel_identifier не может быть пустым")
+
+        invite_hash = self._extract_invite_hash(value)
+        if invite_hash:
+            checked: Any = None
+            try:
+                checked = await client(functions.messages.CheckChatInviteRequest(hash=invite_hash))
+                if isinstance(checked, types.ChatInviteAlready):
+                    chat = checked.chat
+                    return {
+                        "success": True,
+                        "status": "already_joined",
+                        "channel_id": self._channel_api_id(chat),
+                        "title": getattr(chat, "title", None),
+                        "username": getattr(chat, "username", None),
+                        "participants_count": getattr(chat, "participants_count", None),
+                        "request_needed": False,
+                        "message": "Аккаунт уже в канале/чате",
+                    }
+
+                imported = await client(functions.messages.ImportChatInviteRequest(hash=invite_hash))
+                chat = next(
+                    (chat for chat in getattr(imported, "chats", []) or [] if isinstance(chat, (Channel, Chat))),
+                    None,
+                )
+                return {
+                    "success": True,
+                    "status": "joined",
+                    "channel_id": self._channel_api_id(chat) if chat else None,
+                    "title": getattr(chat, "title", None) if chat else getattr(checked, "title", None),
+                    "username": getattr(chat, "username", None) if chat else None,
+                    "participants_count": getattr(chat, "participants_count", None)
+                    if chat
+                    else getattr(checked, "participants_count", None),
+                    "request_needed": False,
+                    "message": "Вход по invite link выполнен",
+                }
+            except InviteRequestSentError:
+                return {
+                    "success": True,
+                    "status": "request_sent",
+                    "channel_id": None,
+                    "title": getattr(checked, "title", None),
+                    "username": None,
+                    "participants_count": getattr(checked, "participants_count", None),
+                    "request_needed": True,
+                    "message": "Заявка на вступление отправлена",
+                }
+            except (InviteHashEmptyError, InviteHashExpiredError, InviteHashInvalidError) as e:
+                raise ValueError(f"Некорректная или устаревшая invite link: {e}")
+            except FloodWaitError as e:
+                raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+            except RPCError as e:
+                raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+        try:
+            entity = await client.get_entity(self._normalize_channel_identifier(value))
+            if not isinstance(entity, Channel):
+                raise ValueError("Указанный идентификатор не является каналом")
+
+            try:
+                await client(functions.channels.JoinChannelRequest(channel=entity))
+                status = "joined"
+                message = "Подписка на канал выполнена"
+            except UserAlreadyParticipantError:
+                status = "already_joined"
+                message = "Аккаунт уже подписан на канал"
+            except InviteRequestSentError:
+                status = "request_sent"
+                message = "Заявка на вступление отправлена"
+
+            return {
+                "success": True,
+                "status": status,
+                "channel_id": self._channel_api_id(entity),
+                "title": getattr(entity, "title", None),
+                "username": getattr(entity, "username", None),
+                "participants_count": getattr(entity, "participants_count", None),
+                "request_needed": status == "request_sent",
+                "message": message,
+            }
+        except ValueError as e:
+            raise ValueError(f"Канал не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def get_channel_comments_status(
+        self,
+        channel_identifier: str,
+        message_id: Optional[int] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Проверяет, есть ли discussion group и комментарии у конкретного поста."""
+        client = await self._get_session_client(session_id)
+        try:
+            entity = await client.get_entity(self._normalize_channel_identifier(channel_identifier))
+            if not isinstance(entity, Channel):
+                raise ValueError("Указанный идентификатор не является каналом")
+
+            full = await client(functions.channels.GetFullChannelRequest(channel=entity))
+            full_chat = getattr(full, "full_chat", None)
+            linked_chat_id = getattr(full_chat, "linked_chat_id", None)
+            linked_chat_name: Optional[str] = None
+            if linked_chat_id:
+                for chat in getattr(full, "chats", []) or []:
+                    if getattr(chat, "id", None) == linked_chat_id:
+                        linked_chat_name = getattr(chat, "title", None)
+                        break
+
+            comments_count = 0
+            has_comments = False
+            if message_id is not None:
+                msg = await client.get_messages(entity, ids=message_id)
+                if not msg:
+                    raise ValueError("Пост не найден")
+                replies = getattr(msg, "replies", None)
+                comments_count = int(getattr(replies, "replies", 0) or 0) if replies else 0
+                has_comments = bool(
+                    replies
+                    and (
+                        bool(getattr(replies, "comments", False))
+                        or comments_count > 0
+                    )
+                )
+            else:
+                has_comments = bool(linked_chat_id)
+
+            return {
+                "success": True,
+                "channel_id": self._channel_api_id(entity),
+                "channel_name": getattr(entity, "title", None),
+                "linked_chat_id": linked_chat_id,
+                "linked_chat_name": linked_chat_name,
+                "has_discussion_group": bool(linked_chat_id),
+                "message_id": message_id,
+                "has_comments": has_comments,
+                "comments_count": comments_count,
+                "message": "Комментарии включены" if has_comments else "Комментарии не найдены",
+            }
+        except ValueError as e:
+            raise ValueError(f"Канал или пост не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def get_post_comments(
+        self,
+        channel_identifier: str,
+        message_id: int,
+        limit: int = 50,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Возвращает комментарии/ответы к посту канала."""
+        client = await self._get_session_client(session_id)
+        try:
+            entity = await client.get_entity(self._normalize_channel_identifier(channel_identifier))
+            if not isinstance(entity, Channel):
+                raise ValueError("Указанный идентификатор не является каналом")
+
+            result = await client(
+                functions.messages.GetRepliesRequest(
+                    peer=entity,
+                    msg_id=message_id,
+                    offset_id=0,
+                    offset_date=None,
+                    add_offset=0,
+                    limit=limit,
+                    max_id=0,
+                    min_id=0,
+                    hash=0,
+                )
+            )
+            comments = [
+                self._message_to_dict(msg, fallback_chat_id=self._channel_api_id(entity))
+                for msg in getattr(result, "messages", []) or []
+                if getattr(msg, "id", None)
+            ]
+            return {
+                "success": True,
+                "channel_id": self._channel_api_id(entity),
+                "channel_name": getattr(entity, "title", None),
+                "message_id": message_id,
+                "comments": comments,
+                "total": len(comments),
+            }
+        except ValueError as e:
+            raise ValueError(f"Канал или пост не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def collect_channel_posts(
+        self,
+        channel_identifier: str,
+        limit: int = 50,
+        exclude_forwards: bool = True,
+        exclude_ads: bool = True,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Собирает последние посты канала и сохраняет их в analytics-репозиторий."""
+        if self.channel_analytics_repo is None:
+            raise ValueError("ChannelAnalyticsRepo не инициализирован")
+
+        client = await self._get_session_client(session_id)
+        if not channel_identifier.strip():
+            raise ValueError("channel_id не может быть пустым")
+
+        try:
+            entity = await client.get_entity(self._normalize_channel_identifier(channel_identifier))
+            if not isinstance(entity, Channel):
+                raise ValueError("Переданный идентификатор должен быть каналом")
+
+            channel_id = self._channel_api_id(entity)
+            channel_username = self._coerce_channel_username(entity, str(channel_identifier))
+            full = await client(functions.channels.GetFullChannelRequest(channel=entity))
+            full_chat = getattr(full, "full_chat", None)
+            participants_count = self._safe_int(
+                getattr(full_chat, "participants_count", None),
+                0,
+            )
+            title = getattr(entity, "title", None)
+            about = getattr(full_chat, "about", None)
+            monetization_signals = self._collect_monetization_signals(
+                " ".join([str(title or ""), str(about or ""), str(channel_identifier or "")])
+            )
+            self.channel_analytics_repo.upsert_channel_profile(
+                channel_username=channel_username,
+                title=title,
+                url=self._build_channel_url(channel_username),
+                niche=None,
+                monetization_signals=monetization_signals if monetization_signals else None,
+                subscribers_count=participants_count,
+            )
+
+            messages = await client.get_messages(entity, limit=limit)
+            normalized_posts: List[Dict[str, Any]] = []
+            for msg in messages:
+                if exclude_forwards and bool(getattr(msg, "forward", None)):
+                    continue
+
+                text = getattr(msg, "message", None) or ""
+                is_ad_like = self._is_ad_like(text)
+                if exclude_ads and is_ad_like:
+                    continue
+
+                date_value = self._safe_iso(getattr(msg, "date", None))
+                msg_id = self._safe_int(getattr(msg, "id", 0))
+                views = self._safe_int(getattr(msg, "views", 0))
+                forwards = self._safe_int(getattr(msg, "forwards", 0))
+                replies = getattr(msg, "replies", None)
+                replies_count = self._safe_int(getattr(replies, "replies", 0))
+                reactions_count = self._count_post_reactions(msg)
+                has_media = bool(getattr(msg, "media", None))
+                post_url = self._build_post_url(channel_username, msg_id)
+                is_forward = bool(
+                    getattr(msg, "forward", None)
+                    or getattr(msg, "fwd_from", None)
+                )
+
+                normalized_posts.append(
+                    {
+                        "channel_id": channel_id,
+                        "channel_username": channel_username,
+                        "message_id": msg_id,
+                        "post_url": post_url,
+                        "date": date_value,
+                        "text": text,
+                        "views": views,
+                        "forwards": forwards,
+                        "replies_count": replies_count,
+                        "reactions_count": reactions_count,
+                        "has_media": has_media,
+                        "has_link": self._contains_http(text),
+                        "is_forward": is_forward,
+                        "is_ad_like": is_ad_like,
+                    }
+                )
+
+            saved = self.channel_analytics_repo.upsert_channel_posts(
+                channel_username=channel_username,
+                posts=normalized_posts,
+            )
+
+            return {
+                "success": True,
+                "channel_id": channel_id,
+                "channel_username": channel_username,
+                "posts_analyzed": saved,
+                "posts": normalized_posts,
+                "message": f"Собрано и сохранено {saved} постов",
+            }
+        except ValueError as e:
+            raise ValueError(f"Канал не найден: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    async def collect_channel_comments(
+        self,
+        channel_identifier: str,
+        posts_limit: int = 20,
+        comments_per_post: int = 50,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Собирает комментарии к последним постам и сохраняет их в analytics-репозиторий."""
+        if self.channel_analytics_repo is None:
+            raise ValueError("ChannelAnalyticsRepo не инициализирован")
+
+        client = await self._get_session_client(session_id)
+        if not channel_identifier.strip():
+            raise ValueError("channel_id не может быть пустым")
+
+        try:
+            entity = await client.get_entity(self._normalize_channel_identifier(channel_identifier))
+            if not isinstance(entity, Channel):
+                raise ValueError("Переданный идентификатор должен быть каналом")
+
+            channel_id = self._channel_api_id(entity)
+            channel_username = self._coerce_channel_username(entity, str(channel_identifier))
+            posts = await client.get_messages(entity, limit=posts_limit)
+            normalized_comments: List[Dict[str, Any]] = []
+            posts_considered = 0
+
+            for msg in posts:
+                msg_id = self._safe_int(getattr(msg, "id", 0))
+                if not msg_id:
+                    continue
+                if getattr(msg, "replies", None) is None or not getattr(msg.replies, "replies", None):
+                    continue
+
+                result = await client(
+                    functions.messages.GetRepliesRequest(
+                        peer=entity,
+                        msg_id=msg_id,
+                        offset_id=0,
+                        offset_date=None,
+                        add_offset=0,
+                        limit=comments_per_post,
+                        max_id=0,
+                        min_id=0,
+                        hash=0,
+                    )
+                )
+                replies = getattr(result, "messages", []) or []
+                if not replies:
+                    continue
+
+                posts_considered += 1
+                for comment in replies:
+                    comment_id = self._safe_int(comment.id, 0)
+                    if comment_id <= 0:
+                        continue
+                    sender_id = self._extract_sender_id(comment)
+                    sender_hash = self._hash_text(str(sender_id)) if sender_id is not None else None
+                    is_author_reply = bool(
+                        isinstance(getattr(comment, "from_id", None), types.PeerChannel)
+                        and getattr(comment.from_id, "channel_id", None) == getattr(entity, "id", None)
+                    )
+                    commenter_username = None
+                    raw_commenter = getattr(comment, "sender", None)
+                    if raw_commenter is not None:
+                        commenter_username = getattr(raw_commenter, "username", None)
+                    if not commenter_username:
+                        commenter_username = getattr(comment, "post_author", None)
+                    if commenter_username:
+                        commenter_username = str(commenter_username).strip() or None
+
+                    normalized_comments.append(
+                        {
+                            "channel_id": channel_id,
+                            "post_message_id": msg_id,
+                            "comment_id": comment_id,
+                            "comment_text": self._normalize_comment_text(
+                                getattr(comment, "message", None)
+                            ),
+                            "comment_date": self._safe_iso(getattr(comment, "date", None)),
+                            "commenter_id_hash": sender_hash,
+                            "commenter_username": commenter_username,
+                            "is_author_reply": is_author_reply,
+                            "is_spam_like": self._is_spam_like_comment(
+                                getattr(comment, "message", None) or ""
+                            ),
+                        }
+                    )
+
+            saved = self.channel_analytics_repo.upsert_channel_comments(
+                channel_username=channel_username,
+                comments=[
+                    {
+                        "post_message_id": item["post_message_id"],
+                        "comment_id": item["comment_id"],
+                        "comment_text": item["comment_text"],
+                        "comment_date": item["comment_date"],
+                        "commenter_id_hash": item["commenter_id_hash"],
+                        "commenter_username": item["commenter_username"],
+                        "is_author_reply": item["is_author_reply"],
+                        "is_spam_like": item["is_spam_like"],
+                    }
+                    for item in normalized_comments
+                ],
+            )
+            # Нормализуем комментарии после сохранения (без служебных полей)
+            normalized_comments = [self._map_comment_payload(item) for item in normalized_comments]
+
+            return {
+                "success": True,
+                "channel_id": channel_id,
+                "channel_username": channel_username,
+                "posts_considered": posts_considered,
+                "total_comments": saved,
+                "comments": normalized_comments,
+                "message": f"Собрано и сохранено {saved} комментариев из {posts_considered} постов",
+            }
+        except ValueError as e:
+            raise ValueError(f"Канал или комментарии недоступны: {e}")
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+
+    def _map_comment_payload(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "channel_id": item.get("channel_id"),
+            "post_message_id": item.get("post_message_id"),
+            "comment_id": item.get("comment_id"),
+            "comment_text": item.get("comment_text"),
+            "comment_date": item.get("comment_date"),
+            "commenter_id_hash": item.get("commenter_id_hash"),
+            "commenter_username": item.get("commenter_username"),
+            "is_author_reply": bool(item.get("is_author_reply")),
+            "is_spam_like": bool(item.get("is_spam_like")),
+        }
+
+    @staticmethod
+    def _collect_monetization_signals(text: str) -> str:
+        signals = [
+            "курс",
+            "консультация",
+            "наставничество",
+            "клуб",
+            "закрытый клуб",
+            "подписка",
+            "платный канал",
+            "марафон",
+            "вебинар",
+            "созвон",
+            "оплата",
+            "тариф",
+            "купить",
+            "записаться",
+            "разбор",
+            "getcourse",
+            "бот",
+            "mini app",
+            "сайт",
+            "воронка",
+            "лид-магнит",
+        ]
+        found = MultiSessionManager._count_keywords(text, signals)
+        if not found:
+            return ""
+        return ", ".join(found)
+
+    @staticmethod
+    def _collect_niche_signals(text: str) -> List[str]:
+        niches = [
+            "онлайн-школы",
+            "getcourse",
+            "продюсеры",
+            "инфобизнес",
+            "telegram-монетизация",
+            "telegram ads",
+            "ai для бизнеса",
+            "английский",
+            "карьера",
+            "подготовка к собеседованиям",
+            "продажи",
+            "фитнес",
+            "нутрициология",
+            "психология",
+            "личный бренд",
+        ]
+        return MultiSessionManager._count_keywords(text, niches)
+
+    @staticmethod
+    def _collect_pain_markers(text: str) -> List[str]:
+        pain_markers = [
+            "запуск",
+            "дорогой трафик",
+            "мало лидов",
+            "падает конверсия",
+            "нет системности",
+            "не хватает кураторов",
+            "сложно удерживать учеников",
+            "низкая доходимость",
+            "надо автоматизировать",
+            "как внедрить нейросети",
+            "как сделать подписку",
+            "как монетизировать аудиторию",
+            "как увеличить ltv",
+            "как поднять retention",
+            "регулярная выручка",
+            "mrr",
+        ]
+        return MultiSessionManager._count_keywords(text, pain_markers)
+
+    @staticmethod
+    def _parse_date_utc(value: Optional[str]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
+
+    def _median(self, values: List[float]) -> float:
+        if not values:
+            return 0.0
+        try:
+            return float(median(values))
+        except Exception:
+            return 0.0
+
+    def _mean(self, values: List[float]) -> float:
+        if not values:
+            return 0.0
+        try:
+            return float(mean(values))
+        except Exception:
+            return 0.0
+
+    def _std(self, values: List[float]) -> float:
+        if not values:
+            return 0.0
+        if len(values) < 2:
+            return 0.0
+        try:
+            return float(pstdev(values))
+        except Exception:
+            return 0.0
+
+    async def _refresh_channel_profile(self, channel_identifier: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        client = await self._get_session_client(session_id)
+        entity = await client.get_entity(self._normalize_channel_identifier(channel_identifier))
+        if not isinstance(entity, Channel):
+            raise ValueError("Указанный идентификатор не является каналом")
+
+        full = await client(functions.channels.GetFullChannelRequest(channel=entity))
+        full_chat = getattr(full, "full_chat", None)
+        return {
+            "entity": entity,
+            "channel_id": self._channel_api_id(entity),
+            "channel_username": self._coerce_channel_username(entity, channel_identifier),
+            "participants_count": self._safe_int(getattr(full_chat, "participants_count", 0), 0),
+            "title": getattr(entity, "title", None),
+            "username": getattr(entity, "username", None),
+            "about": getattr(full_chat, "about", None),
+            "full_chat": full_chat,
+        }
+
+    async def score_channel_health(
+        self,
+        channel_identifier: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if self.channel_analytics_repo is None:
+            raise ValueError("ChannelAnalyticsRepo не инициализирован")
+
+        profile = await self._refresh_channel_profile(channel_identifier, session_id=session_id)
+        channel_username = profile["channel_username"]
+        channel_id = profile["channel_id"]
+        posts = self.channel_analytics_repo.list_channel_posts(channel_username=channel_username, limit=200)
+
+        if not posts:
+            return {
+                "success": False,
+                "channel_id": channel_id,
+                "channel_username": channel_username,
+                "subscribers_count": profile["participants_count"],
+                "posts_analyzed": 0,
+                "median_views_30": 0.0,
+                "avg_views_30": 0.0,
+                "view_rate": 0.0,
+                "posts_per_week": 0.0,
+                "views_cv": 0.0,
+                "median_reactions": 0.0,
+                "reaction_rate": 0.0,
+                "median_forwards": 0.0,
+                "forward_rate": 0.0,
+                "last_post_at": None,
+                "channel_health_score": 0.0,
+                "message": "Недостаточно данных. Сначала соберите посты.",
+            }
+
+        now = datetime.utcnow()
+        cutoff_30 = now - timedelta(days=30)
+        last_30_days_posts = [
+            post for post in posts
+            if self._parse_date_utc(post.get("date")) and self._parse_date_utc(post.get("date")) >= cutoff_30
+        ]
+        if not last_30_days_posts:
+            last_30_days_posts = posts[:min(len(posts), 30)]
+
+        views = [self._safe_float(post.get("views")) for post in last_30_days_posts]
+        forwards = [self._safe_float(post.get("forwards")) for post in last_30_days_posts]
+        reactions = [self._safe_float(post.get("reactions_count")) for post in last_30_days_posts]
+        posts_analyzed = len(last_30_days_posts)
+
+        median_views = self._median(views)
+        avg_views = self._mean(views)
+        subscribers_count = profile["participants_count"]
+        view_rate = 0.0 if not subscribers_count else (median_views / subscribers_count * 100)
+        posts_per_week = self._safe_float(len(last_30_days_posts)) / 4.3
+        cv = 0.0
+        if avg_views > 0:
+            cv = self._std(views) / avg_views
+        median_reactions = self._median(reactions)
+        reaction_rate = 0.0 if median_views <= 0 else (median_reactions / median_views * 100)
+        median_forwards = self._median(forwards)
+        forward_rate = 0.0 if median_views <= 0 else (median_forwards / median_views * 100)
+        last_post_dt = self._parse_date_utc(last_30_days_posts[0].get("date"))
+
+        view_rate_score = self._score_threshold(
+            view_rate,
+            [
+                (20.0, 10.0),
+                (10.0, 8.0),
+                (5.0, 6.0),
+                (2.0, 4.0),
+                (0.01, 1.0),
+            ],
+        )
+        posts_freq_score = self._score_threshold(
+            posts_per_week,
+            [
+                (7.0, 10.0),
+                (4.0, 8.0),
+                (2.0, 6.0),
+                (1.0, 4.0),
+                (0.1, 2.0),
+            ],
+        )
+        reaction_score = self._score_threshold(
+            reaction_rate,
+            [
+                (10.0, 10.0),
+                (6.0, 8.0),
+                (3.0, 6.0),
+                (1.0, 4.0),
+                (0.01, 1.0),
+            ],
+        )
+        forward_score = self._score_threshold(
+            forward_rate,
+            [
+                (5.0, 10.0),
+                (2.0, 8.0),
+                (1.0, 6.0),
+                (0.5, 4.0),
+                (0.1, 2.0),
+            ],
+        )
+        consistency_score = 0.0 if cv <= 0 else self._score_threshold(
+            max(0.0, 100.0 - cv * 20.0),
+            [
+                (80.0, 10.0),
+                (60.0, 8.0),
+                (40.0, 6.0),
+                (20.0, 4.0),
+                (0.0, 2.0),
+            ],
+        )
+        channel_health_score = (
+            view_rate_score * 0.35
+            + posts_freq_score * 0.25
+            + reaction_score * 0.2
+            + forward_score * 0.15
+            + consistency_score * 0.05
+        )
+
+        payload = {
+            "subscribers_count": subscribers_count,
+            "posts_analyzed": posts_analyzed,
+            "median_views_30": median_views,
+            "avg_views_30": avg_views,
+            "view_rate": view_rate,
+            "posts_per_week": posts_per_week,
+            "views_cv": cv,
+            "median_reactions": median_reactions,
+            "reaction_rate": reaction_rate,
+            "median_forwards": median_forwards,
+            "forward_rate": forward_rate,
+            "last_post_at": self._safe_iso(last_post_dt),
+        }
+        self.channel_analytics_repo.upsert_channel_metrics(channel_username, payload)
+        payload.update(
+            {
+                "success": True,
+                "channel_id": channel_id,
+                "channel_username": channel_username,
+                "channel_health_score": round(channel_health_score, 2),
+                "message": "Channel health пересчитан",
+            }
+        )
+        return payload
+
+    async def score_channel_discussion(
+        self,
+        channel_identifier: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if self.channel_analytics_repo is None:
+            raise ValueError("ChannelAnalyticsRepo не инициализирован")
+
+        profile = await self._refresh_channel_profile(channel_identifier, session_id=session_id)
+        channel_username = profile["channel_username"]
+        channel_id = profile["channel_id"]
+        posts = self.channel_analytics_repo.list_channel_posts(channel_username=channel_username, limit=200)
+        comments = self.channel_analytics_repo.list_channel_comments(channel_username=channel_username, limit=2000)
+
+        comments_enabled = False
+        try:
+            comments_status = await self.get_channel_comments_status(
+                channel_identifier,
+                session_id=session_id,
+            )
+            comments_enabled = bool(comments_status.get("has_comments"))
+        except Exception:
+            comments_enabled = False
+
+        if not posts:
+            return {
+                "success": False,
+                "channel_id": channel_id,
+                "channel_username": channel_username,
+                "comments_enabled": comments_enabled,
+                "posts_with_comments": 0,
+                "median_comments_30": 0.0,
+                "avg_comments_30": 0.0,
+                "comment_rate": 0.0,
+                "unique_commenters_30": 0,
+                "author_replies_count": 0,
+                "author_reply_rate": 0.0,
+                "spam_comments_count": 0,
+                "spam_ratio": 0.0,
+                "discussion_score": 0.0,
+                "message": "Недостаточно данных. Сначала соберите посты и комментарии.",
+            }
+
+        now = datetime.utcnow()
+        cutoff_30 = now - timedelta(days=30)
+        recent_posts = [
+            post for post in posts
+            if self._parse_date_utc(post.get("date")) and self._parse_date_utc(post.get("date")) >= cutoff_30
+        ]
+        if not recent_posts:
+            recent_posts = posts[:min(len(posts), 30)]
+        if not recent_posts:
+            recent_posts = posts
+
+        recent_post_ids = {
+            self._safe_int(post.get("message_id"))
+            for post in recent_posts
+            if self._safe_int(post.get("message_id"), 0) > 0
+        }
+        post_comment_counts = []
+        comments_by_post: Dict[int, List[Dict[str, Any]]] = {}
+        relevant_comments = []
+        for comment in comments:
+            pid = self._safe_int(comment.get("post_message_id"))
+            if pid in recent_post_ids:
+                relevant_comments.append(comment)
+                comments_by_post.setdefault(pid, []).append(comment)
+
+        for post in recent_posts:
+            pid = self._safe_int(post.get("message_id"))
+            post_comment_counts.append(len(comments_by_post.get(pid, [])))
+
+        posts_with_comments = len([count for count in post_comment_counts if count > 0])
+        median_comments_30 = self._median([float(v) for v in post_comment_counts]) if post_comment_counts else 0.0
+        avg_comments_30 = self._mean([float(v) for v in post_comment_counts]) if post_comment_counts else 0.0
+
+        if not relevant_comments:
+            comment_count = 0
+            unique_commenters = 0
+            author_reply_count = 0
+            spam_count = 0
+            comment_rate = 0.0
+            author_reply_rate = 0.0
+            spam_ratio = 0.0
+            discussion_score = 0.0
+        else:
+            unique_commenters = len(
+                {
+                    item.get("commenter_id_hash")
+                    for item in relevant_comments
+                    if item.get("commenter_id_hash")
+                }
+            )
+            author_reply_count = len(
+                {
+                    self._safe_int(item.get("post_message_id"))
+                    for item in relevant_comments
+                    if bool(item.get("is_author_reply"))
+                }
+            )
+            spam_count = len([item for item in relevant_comments if bool(item.get("is_spam_like"))])
+            total_comments = len(relevant_comments)
+            metrics_payload = self.channel_analytics_repo.get_channel_metrics(channel_username) or {}
+            median_views_30 = self._safe_float(metrics_payload.get("median_views"))
+
+            comment_rate = 0.0 if median_views_30 <= 0 else (median_comments_30 / median_views_30 * 100)
+            author_reply_rate = 0.0 if posts_with_comments <= 0 else (author_reply_count / posts_with_comments * 100)
+            spam_ratio = 0.0 if total_comments <= 0 else (spam_count / total_comments * 100)
+
+            comment_rate_score = self._score_threshold(
+                comment_rate,
+                [
+                    (1.0, 10.0),
+                    (0.3, 8.0),
+                    (0.1, 5.0),
+                    (0.01, 2.0),
+                    (0.0, 0.0),
+                ],
+            )
+            reply_score = self._score_threshold(
+                author_reply_rate,
+                [
+                    (30.0, 10.0),
+                    (15.0, 8.0),
+                    (5.0, 6.0),
+                    (1.0, 3.0),
+                    (0.0, 1.0),
+                ],
+            )
+            unique_ratio = min(10.0, unique_commenters / max(1, posts_with_comments) * 2.0)
+            spam_score = max(0.0, 10.0 - spam_ratio)
+            discussion_score = (
+                comment_rate_score * 0.55
+                + reply_score * 0.25
+                + unique_ratio * 0.1
+                + spam_score * 0.1
+            )
+
+            if not comments_enabled:
+                discussion_score = 0.0
+
+        payload = {
+            "success": True,
+            "channel_id": channel_id,
+            "channel_username": channel_username,
+            "comments_enabled": comments_enabled,
+            "posts_with_comments": posts_with_comments,
+            "median_comments_30": median_comments_30,
+            "avg_comments_30": avg_comments_30,
+            "comment_rate": self._safe_float(comment_rate),
+            "unique_commenters_30": unique_commenters,
+            "author_replies_count": author_reply_count,
+            "author_reply_rate": self._safe_float(author_reply_rate),
+            "spam_comments_count": spam_count,
+            "spam_ratio": self._safe_float(spam_ratio),
+            "discussion_score": self._safe_float(round(discussion_score, 2)),
+            "message": "Discussion score пересчитан",
+        }
+        self.channel_analytics_repo.upsert_discussion_metrics(
+            channel_username=channel_username,
+            payload={
+                "posts_with_comments": posts_with_comments,
+                "median_comments_30": median_comments_30,
+                "avg_comments_30": avg_comments_30,
+                "comment_rate": self._safe_float(comment_rate),
+                "unique_commenters_30": unique_commenters,
+                "author_replies_count": author_reply_count,
+                "author_reply_rate": self._safe_float(author_reply_rate),
+                "spam_ratio": self._safe_float(spam_ratio),
+                "discussion_score": self._safe_float(discussion_score),
+                "comments_enabled": comments_enabled,
+            },
+        )
+        return payload
+
+    async def score_business_fit(
+        self,
+        channel_identifier: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if self.channel_analytics_repo is None:
+            raise ValueError("ChannelAnalyticsRepo не инициализирован")
+
+        profile = await self._refresh_channel_profile(channel_identifier, session_id=session_id)
+        channel_username = profile["channel_username"]
+        channel_id = profile["channel_id"]
+
+        posts = self.channel_analytics_repo.list_channel_posts(channel_username=channel_username, limit=200)
+        post_text = " ".join([str(item.get("text") or "") for item in posts[:30]])
+        channel_text = " ".join(
+            filter(
+                None,
+                [
+                    str(profile.get("title") or ""),
+                    str(profile.get("username") or ""),
+                    str(profile.get("about") or ""),
+                    post_text,
+                ],
+            )
+        )
+
+        niche_matches = self._collect_niche_signals(channel_text)
+        monetization_matches = self._collect_monetization_signals(channel_text).split(", ") if channel_text else []
+        pain_markers = self._collect_pain_markers(channel_text.lower())
+
+        niche_fit_score = min(10.0, float(len(set(niche_matches)) * 2.0))
+        monetization_signal_score = min(10.0, float(len(set(monetization_matches)) * 1.5))
+        pain_markers_score = min(10.0, float(len(set(pain_markers)) * 1.5))
+
+        ai_product_potential_score = min(
+            10.0,
+            niche_fit_score * 0.45 + monetization_signal_score * 0.3 + pain_markers_score * 0.25,
+        )
+
+        suggested_ai_product = None
+        if "онлайн-школы" in niche_matches or "продажи" in niche_matches:
+            suggested_ai_product = "AI-ассистент для лид-ответов и обработки комментариев"
+        elif "фитнес" in niche_matches:
+            suggested_ai_product = "AI-бот прогрева и персональной коммуникации"
+        elif "карьера" in niche_matches or "английский" in niche_matches:
+            suggested_ai_product = "AI-тренажер для ответа на частые вопросы и отбора лидов"
+        elif "психология" in niche_matches:
+            suggested_ai_product = "AI-скрипт прогрева для психологических ниш"
+
+        if monetization_matches:
+            monetization_preview = ", ".join(sorted(set(monetization_matches))[:3])
+            reason = (
+                f"Ниша: {', '.join(niche_matches) or 'неявная'}, "
+                f"монетизация: {monetization_preview}, "
+                f"pain-маркеры: {len(pain_markers)}"
+            )
+        else:
+            reason = "Нужны доп.сигналы по монетизации и нише"
+
+        business_fit_score = min(
+            10.0,
+            (niche_fit_score * 0.45)
+            + (monetization_signal_score * 0.35)
+            + (pain_markers_score * 0.2),
+        )
+
+        self.channel_analytics_repo.upsert_campaign_score(
+            channel_username=channel_username,
+            payload={
+                "niche_fit_score": niche_fit_score,
+                "monetization_signal_score": monetization_signal_score,
+                "audience_attention_score": 0.0,
+                "discussion_score": 0.0,
+                "business_fit_score": business_fit_score,
+                "campaign_score": 0.0,
+                "recommended_action": "manual_review",
+                "reason": reason,
+                "suggested_ai_product": suggested_ai_product,
+            },
+        )
+
+        return {
+            "success": True,
+            "channel_id": channel_id,
+            "channel_username": channel_username,
+            "niche_fit_score": niche_fit_score,
+            "monetization_signal_score": monetization_signal_score,
+            "pain_markers_score": pain_markers_score,
+            "ai_product_potential_score": ai_product_potential_score,
+            "business_fit_score": business_fit_score,
+            "reason": reason,
+            "suggested_ai_product": suggested_ai_product,
+        }
+
+    async def score_campaign(
+        self,
+        channel_identifier: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if self.channel_analytics_repo is None:
+            raise ValueError("ChannelAnalyticsRepo не инициализирован")
+
+        health = await self.score_channel_health(channel_identifier, session_id=session_id)
+        discussion = await self.score_channel_discussion(channel_identifier, session_id=session_id)
+        business = await self.score_business_fit(channel_identifier, session_id=session_id)
+
+        view_rate = self._safe_float(health.get("view_rate"))
+        median_views = self._safe_float(health.get("median_views_30"))
+        comments_enabled = bool(discussion.get("comments_enabled"))
+        comment_rate = self._safe_float(discussion.get("comment_rate"))
+        posts_analyzed = self._safe_int(health.get("posts_analyzed"), 0)
+
+        profile = await self._refresh_channel_profile(channel_identifier, session_id=session_id)
+        channel_username = profile["channel_username"]
+        channel_id = profile["channel_id"]
+        metrics = self.channel_analytics_repo.get_channel_metrics(channel_username=channel_username) or {}
+
+        view_rate_score = self._score_threshold(
+            view_rate,
+            [
+                (20.0, 10.0),
+                (10.0, 8.0),
+                (5.0, 6.0),
+                (2.0, 4.0),
+                (0.01, 1.0),
+            ],
+        )
+        median_views_score = self._score_threshold(
+            median_views,
+            [
+                (5000.0, 10.0),
+                (1000.0, 8.0),
+                (300.0, 6.0),
+                (100.0, 4.0),
+                (0.01, 1.0),
+            ],
+        )
+        comments_enabled_score = 10.0 if comments_enabled else 0.0
+        comment_rate_score = self._score_threshold(
+            comment_rate,
+            [
+                (1.0, 10.0),
+                (0.3, 8.0),
+                (0.1, 5.0),
+                (0.01, 2.0),
+                (0.0, 0.0),
+            ],
+        )
+
+        niche_fit_score = self._safe_float(business.get("niche_fit_score"))
+        monetization_signal_score = self._safe_float(business.get("monetization_signal_score"))
+        campaign_score = (
+            view_rate_score * 0.20
+            + median_views_score * 0.15
+            + comments_enabled_score * 0.15
+            + comment_rate_score * 0.15
+            + niche_fit_score * 0.20
+            + monetization_signal_score * 0.15
+        )
+        campaign_score = round(campaign_score, 2)
+        campaign_score_float = campaign_score
+
+        recommendation = "manual_review"
+        if (campaign_score >= 8.0 and comments_enabled and median_views >= 100 and niche_fit_score >= 7.0):
+            recommendation = "test_now"
+        elif campaign_score >= 6.5 and campaign_score < 8.0:
+            recommendation = "watch"
+
+        if (
+            campaign_score < 6.5
+            or not comments_enabled
+            or niche_fit_score < 5.0
+            or posts_analyzed < 3
+            or self._safe_float(metrics.get("avg_views")) == 0
+        ):
+            recommendation = "skip" if campaign_score < 6.5 or not comments_enabled else "watch"
+
+        if recommendation == "watch" and (health.get("success") is False or discussion.get("success") is False):
+            recommendation = "manual_review"
+
+        reason = (
+            f"lead-score: vr={view_rate_score:.1f}, mv={median_views_score:.1f}, "
+            f"c_en={comments_enabled_score:.1f}, cr={comment_rate_score:.1f}, "
+            f"niche={niche_fit_score:.1f}, monet={monetization_signal_score:.1f}"
+        )
+
+        self.channel_analytics_repo.upsert_campaign_score(
+            channel_username=channel_username,
+            payload={
+                "niche_fit_score": niche_fit_score,
+                "monetization_signal_score": monetization_signal_score,
+                "audience_attention_score": median_views_score,
+                "discussion_score": self._safe_float(discussion.get("discussion_score")),
+                "business_fit_score": self._safe_float(business.get("business_fit_score")),
+                "campaign_score": campaign_score,
+                "recommended_action": recommendation,
+                "reason": reason,
+                "suggested_ai_product": business.get("suggested_ai_product"),
+            },
+        )
+
+        return {
+            "success": True,
+            "channel_id": channel_id,
+            "channel_username": channel_username,
+            "lead_score": campaign_score_float,
+            "campaign_score": campaign_score_float,
+            "recommended_action": recommendation,
+            "reason": reason,
+            "niche_fit_score": niche_fit_score,
+            "monetization_signal_score": monetization_signal_score,
+            "audience_attention_score": median_views_score,
+            "comments_enabled_score": comments_enabled_score,
+            "comment_rate_score": comment_rate_score,
+            "median_views_score": median_views_score,
+            "view_rate_score": view_rate_score,
+            "discussion_score": self._safe_float(discussion.get("discussion_score")),
+            "business_fit_score": self._safe_float(business.get("business_fit_score")),
+        }
+
+    async def refresh_channel_metrics(self, channel_identifier: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        if self.channel_analytics_repo is None:
+            raise ValueError("ChannelAnalyticsRepo не инициализирован")
+
+        collect_posts = await self.collect_channel_posts(
+            channel_identifier=channel_identifier,
+            limit=60,
+            session_id=session_id,
+        )
+        collect_comments = await self.collect_channel_comments(
+            channel_identifier=channel_identifier,
+            posts_limit=25,
+            comments_per_post=60,
+            session_id=session_id,
+        )
+        health = await self.score_channel_health(channel_identifier=channel_identifier, session_id=session_id)
+        discussion = await self.score_channel_discussion(channel_identifier=channel_identifier, session_id=session_id)
+        business = await self.score_business_fit(channel_identifier=channel_identifier, session_id=session_id)
+        campaign = await self.score_campaign(channel_identifier=channel_identifier, session_id=session_id)
+        opportunities = await self.opportunity_posts(
+            channel_identifier=channel_identifier,
+            limit=20,
+            session_id=session_id,
+        )
+
+        return {
+            "success": True,
+            "channel_id": collect_posts["channel_id"],
+            "channel_username": collect_posts["channel_username"],
+            "posts_collected": collect_posts["posts_analyzed"],
+            "comments_collected": collect_comments["total_comments"],
+            "health": health,
+            "discussion": discussion,
+            "business": business,
+            "campaign": campaign,
+            "opportunities_count": opportunities["total"],
+            "message": "Полный пересчёт метрик завершен",
+        }
+
+    async def opportunity_posts(
+        self,
+        channel_identifier: str,
+        limit: int = 20,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if self.channel_analytics_repo is None:
+            raise ValueError("ChannelAnalyticsRepo не инициализирован")
+
+        profile = await self._refresh_channel_profile(channel_identifier, session_id=session_id)
+        channel_username = profile["channel_username"]
+        channel_id = profile["channel_id"]
+        posts = self.channel_analytics_repo.list_channel_posts(channel_username=channel_username, limit=200)
+        comments = self.channel_analytics_repo.list_channel_comments(channel_username=channel_username, limit=5000)
+
+        if not posts:
+            return {
+                "success": False,
+                "channel_id": channel_id,
+                "channel_username": channel_username,
+                "posts": [],
+                "total": 0,
+                "message": "Недостаточно данных. Сначала соберите посты.",
+            }
+
+        posts_comment_map: Dict[int, List[Dict[str, Any]]] = {}
+        for comment in comments:
+            posts_comment_map.setdefault(self._safe_int(comment.get("post_message_id")), []).append(comment)
+
+        now = datetime.utcnow()
+        scored_posts: List[Dict[str, Any]] = []
+        for post in posts[: max(limit * 3, 1)]:
+            msg_id = self._safe_int(post.get("message_id"))
+            text = str(post.get("text") or "")
+            post_date = self._parse_date_utc(post.get("date"))
+            post_comments = posts_comment_map.get(msg_id, [])
+            comments_count = len(post_comments)
+
+            recency_days = 30.0
+            if post_date:
+                recency_days = max(1.0, (now - post_date).days + 1)
+            recency_score = max(0.0, 10.0 - recency_days / 3.0)
+
+            relevance_score = 0.0
+            pain_markers = self._collect_pain_markers(text.lower())
+            niche_terms = self._collect_niche_signals((profile.get("title") or "") + " " + text.lower())
+            ai_terms = self._collect_monetization_signals((profile.get("about") or "") + " " + text.lower()).split(", ")
+            relevance_score = min(
+                10.0,
+                len(set(niche_terms)) * 1.8 + (2.0 if set(ai_terms) & {"ai", "искусственный"} else 0.0) + 1.0,
+            )
+
+            views = max(0.0, self._safe_float(post.get("views"), 0.0))
+            views_score = self._score_threshold(
+                views,
+                [
+                    (5000.0, 10.0),
+                    (1000.0, 8.0),
+                    (300.0, 6.0),
+                    (100.0, 4.0),
+                    (0.01, 1.0),
+                ],
+            )
+            comment_score = self._score_threshold(
+                comments_count,
+                [
+                    (50.0, 10.0),
+                    (20.0, 8.0),
+                    (10.0, 6.0),
+                    (5.0, 4.0),
+                    (0.0, 1.0),
+                ],
+            )
+            spam_ratio = 0.0
+            spam_count = len([c for c in post_comments if bool(c.get("is_spam_like"))])
+            if comments_count > 0:
+                spam_ratio = spam_count / comments_count * 100.0
+            spam_score = max(0.0, 10.0 - spam_ratio)
+            post_relevance_score = min(10.0, (relevance_score + views_score + comment_score + recency_score) / 4.0)
+            opportunity_score = round(
+                post_relevance_score * 0.55
+                + (10.0 - min(10.0, spam_ratio)) * 0.2
+                + views_score * 0.2
+                + (6.0 if pain_markers else 1.0) * 0.05,
+                2,
+            )
+
+            suggested_angle = "Выпустить полезный комментарий с практическим кейсом в этой теме."
+            if pain_markers:
+                suggested_angle = (
+                    f"Ответь по pain-point: {pain_markers[0].strip()} с конкретным шагом внедрения AI."
+                )
+            elif niche_terms:
+                suggested_angle = f"Подстройся под нишу: {niche_terms[0]} и предложи мини-аудит в комменте."
+
+            scored_posts.append(
+                {
+                    "channel_id": channel_id,
+                    "channel_username": channel_username,
+                    "post_url": post.get("post_url"),
+                    "message_id": msg_id,
+                    "date": post.get("date"),
+                    "text_preview": text[:220] if text else None,
+                    "views": self._safe_int(post.get("views"), 0),
+                    "comments_count": comments_count,
+                    "reactions_count": self._safe_int(post.get("reactions_count"), 0),
+                    "post_relevance_score": round(post_relevance_score, 2),
+                    "pain_markers": ", ".join(sorted(set(pain_markers))) or None,
+                    "opportunity_score": opportunity_score,
+                    "suggested_angle": suggested_angle,
+                }
+            )
+
+        scored_posts.sort(key=lambda item: item["opportunity_score"], reverse=True)
+        top_posts = scored_posts[: limit]
+        self.channel_analytics_repo.upsert_opportunity_posts(channel_username=channel_username, posts=top_posts)
+
+        return {
+            "success": True,
+            "channel_id": channel_id,
+            "channel_username": channel_username,
+            "posts": top_posts,
+            "total": len(top_posts),
+        }
+
+    async def subscribe_channel(
+        self,
+        channel_identifier: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Подписывает текущий аккаунт на канал.
 
@@ -2616,31 +4313,18 @@ class MultiSessionManager:
         Returns:
             Результат подписки
         """
-        if not self.client:
-            await self.get_client(self.default_session_id)
+        result = await self.join_channel(channel_identifier, session_id=session_id)
+        return {
+            "success": result["success"],
+            "channel_id": result.get("channel_id"),
+            "message": result["message"],
+        }
 
-        if not self._is_connected:
-            raise ValueError("Необходима авторизация")
-
-        try:
-            entity = await self.client.get_entity(channel_identifier)
-            if not isinstance(entity, Channel):
-                raise ValueError("Указанный идентификатор не является каналом")
-
-            await self.client(functions.channels.JoinChannelRequest(channel=entity))
-            return {
-                "success": True,
-                "channel_id": entity.id,
-                "message": "Подписка на канал выполнена",
-            }
-        except ValueError as e:
-            raise ValueError(f"Канал не найден: {e}")
-        except FloodWaitError as e:
-            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
-        except RPCError as e:
-            raise ValueError(f"Ошибка Telegram API: {e.message}")
-
-    async def unsubscribe_channel(self, channel_identifier: str) -> Dict[str, Any]:
+    async def unsubscribe_channel(
+        self,
+        channel_identifier: str,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Отписывает текущий аккаунт от канала.
 
@@ -2650,21 +4334,17 @@ class MultiSessionManager:
         Returns:
             Результат отписки
         """
-        if not self.client:
-            await self.get_client(self.default_session_id)
-
-        if not self._is_connected:
-            raise ValueError("Необходима авторизация")
+        client = await self._get_session_client(session_id)
 
         try:
-            entity = await self.client.get_entity(channel_identifier)
+            entity = await client.get_entity(self._normalize_channel_identifier(channel_identifier))
             if not isinstance(entity, Channel):
                 raise ValueError("Указанный идентификатор не является каналом")
 
-            await self.client(functions.channels.LeaveChannelRequest(channel=entity))
+            await client(functions.channels.LeaveChannelRequest(channel=entity))
             return {
                 "success": True,
-                "channel_id": entity.id,
+                "channel_id": self._channel_api_id(entity),
                 "message": "Отписка от канала выполнена",
             }
         except ValueError as e:
@@ -3003,6 +4683,112 @@ class MultiSessionManager:
         except Exception as e:
             logger.error(f"Неожиданная ошибка при получении чатов из папки: {e}", exc_info=True)
             raise ValueError(f"Ошибка при получении чатов из папки: {str(e)}")
+
+    async def upsert_lead_search_folder(
+        self,
+        channel_identifiers: List[str],
+        folder_name: str = "Lead Search 1",
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Создает или обновляет Telegram-папку и добавляет туда каналы."""
+        client = await self._get_session_client(session_id)
+        target_folder_name = folder_name.strip() or "Lead Search 1"
+
+        try:
+            filters_result = await client(functions.messages.GetDialogFiltersRequest())
+            filters = self._dialog_filters_from_result(filters_result)
+            existing_filter = None
+            used_ids: set[int] = set()
+            for dialog_filter in filters:
+                filter_id = getattr(dialog_filter, "id", None)
+                if isinstance(filter_id, int):
+                    used_ids.add(filter_id)
+                if self._dialog_filter_title(dialog_filter).lower() == target_folder_name.lower():
+                    existing_filter = dialog_filter
+
+            if existing_filter is not None:
+                folder_id = int(existing_filter.id)
+                pinned_peers = list(getattr(existing_filter, "pinned_peers", []) or [])
+                include_peers = list(getattr(existing_filter, "include_peers", []) or [])
+                exclude_peers = list(getattr(existing_filter, "exclude_peers", []) or [])
+                contacts = getattr(existing_filter, "contacts", None)
+                non_contacts = getattr(existing_filter, "non_contacts", None)
+                groups = getattr(existing_filter, "groups", None)
+                broadcasts = getattr(existing_filter, "broadcasts", None)
+                bots = getattr(existing_filter, "bots", None)
+                exclude_muted = getattr(existing_filter, "exclude_muted", None)
+                exclude_read = getattr(existing_filter, "exclude_read", None)
+                exclude_archived = getattr(existing_filter, "exclude_archived", None)
+                emoticon = getattr(existing_filter, "emoticon", None)
+            else:
+                folder_id = next((candidate for candidate in range(2, 101) if candidate not in used_ids), 2)
+                pinned_peers = []
+                include_peers = []
+                exclude_peers = []
+                contacts = None
+                non_contacts = None
+                groups = None
+                broadcasts = True
+                bots = None
+                exclude_muted = None
+                exclude_read = None
+                exclude_archived = None
+                emoticon = None
+
+            existing_peer_keys = {self._input_peer_key(peer) for peer in include_peers}
+            added: List[Dict[str, Any]] = []
+            skipped: List[str] = []
+
+            for identifier in channel_identifiers:
+                try:
+                    entity = await client.get_entity(self._normalize_channel_identifier(identifier))
+                    if not isinstance(entity, Channel):
+                        skipped.append(identifier)
+                        continue
+                    input_peer = await client.get_input_entity(entity)
+                    peer_key = self._input_peer_key(input_peer)
+                    if peer_key not in existing_peer_keys:
+                        include_peers.append(input_peer)
+                        existing_peer_keys.add(peer_key)
+                    added.append(self._chat_info_from_entity(entity))
+                except Exception:
+                    skipped.append(identifier)
+
+            if not added and existing_filter is None:
+                raise ValueError("Не найдено ни одного доступного канала для новой папки")
+
+            dialog_filter = types.DialogFilter(
+                id=folder_id,
+                title=target_folder_name,
+                pinned_peers=pinned_peers,
+                include_peers=include_peers,
+                exclude_peers=exclude_peers,
+                contacts=contacts,
+                non_contacts=non_contacts,
+                groups=groups,
+                broadcasts=broadcasts,
+                bots=bots,
+                exclude_muted=exclude_muted,
+                exclude_read=exclude_read,
+                exclude_archived=exclude_archived,
+                emoticon=emoticon,
+            )
+            await client(functions.messages.UpdateDialogFilterRequest(id=folder_id, filter=dialog_filter))
+            return {
+                "success": True,
+                "folder_name": target_folder_name,
+                "folder_id": folder_id,
+                "added": added,
+                "skipped": skipped,
+                "total_added": len(added),
+                "message": "Папка обновлена",
+            }
+        except FloodWaitError as e:
+            raise ValueError(f"Слишком много запросов. Попробуйте через {e.seconds} секунд")
+        except RPCError as e:
+            raise ValueError(f"Ошибка Telegram API: {e.message}")
+        except Exception as e:
+            raise ValueError(f"Ошибка обновления папки: {str(e)}")
     
     async def get_folders_list(self) -> List[Dict[str, Any]]:
         """
@@ -3095,5 +4881,13 @@ class MultiSessionManager:
     def is_connected(self, session_id: Optional[str] = None) -> bool:
         """Проверяет, авторизована ли сессия."""
         sid = self._normalize_session_id(session_id)
-        return sid in self._authorized_sessions
+        if sid in self._authorized_sessions:
+            return True
+
+        row = self._get_session_repo().get(sid)
+        if row and row.get("is_authorized") and row.get("string_session"):
+            self._authorized_sessions.add(sid)
+            return True
+
+        return False
     

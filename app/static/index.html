@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Telegram CRM</title>
+  <style>
+    :root {
+      --bg: #f6f5f2;
+      --panel: #ffffff;
+      --ink: #202124;
+      --muted: #6c716f;
+      --line: #d9ddd6;
+      --accent: #166b5a;
+      --accent-2: #2b4c7e;
+      --danger: #a33b32;
+      --field: #fbfbfa;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    .topbar {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 18px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 14px;
+      min-height: 20px;
+      text-align: right;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 24px auto 40px;
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .section-head {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    form {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    input,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--field);
+      color: var(--ink);
+      font: inherit;
+      font-size: 14px;
+      padding: 10px 11px;
+      outline: none;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 82px;
+    }
+
+    input:focus,
+    textarea:focus {
+      border-color: var(--accent-2);
+      box-shadow: 0 0 0 3px rgba(43, 76, 126, 0.12);
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    button {
+      min-height: 38px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 0 14px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      background: var(--accent);
+      color: #ffffff;
+    }
+
+    button.secondary {
+      background: #ffffff;
+      border-color: var(--line);
+      color: var(--ink);
+    }
+
+    button.danger {
+      background: #ffffff;
+      border-color: #d7aaa5;
+      color: var(--danger);
+    }
+
+    button:disabled {
+      cursor: wait;
+      opacity: 0.65;
+    }
+
+    .company-list {
+      min-height: 420px;
+    }
+
+    .company-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .company-row:last-child {
+      border-bottom: 0;
+    }
+
+    .company-title {
+      margin: 0 0 6px;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .meta span {
+      min-height: 20px;
+    }
+
+    .description {
+      margin: 10px 0 0;
+      color: #383b3a;
+      font-size: 14px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .row-actions {
+      display: flex;
+      gap: 8px;
+      align-items: start;
+    }
+
+    .empty {
+      padding: 34px 18px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 840px) {
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .status {
+        text-align: left;
+      }
+
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      .company-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="topbar">
+      <h1>Telegram CRM</h1>
+      <div id="status" class="status">Loading...</div>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="section-head">
+        <h2 id="form-title">New company</h2>
+      </div>
+      <form id="company-form">
+        <input type="hidden" id="company-id">
+        <label>
+          Name
+          <input id="name" name="name" autocomplete="organization" required maxlength="200">
+        </label>
+        <label>
+          Website
+          <input id="website" name="website" autocomplete="url" maxlength="500">
+        </label>
+        <label>
+          Telegram chat
+          <input id="telegram_chat" name="telegram_chat" placeholder="@username or chat id" maxlength="200">
+        </label>
+        <label>
+          Description
+          <textarea id="description" name="description" maxlength="2000"></textarea>
+        </label>
+        <label>
+          Notes
+          <textarea id="notes" name="notes" maxlength="5000"></textarea>
+        </label>
+        <div class="actions">
+          <button id="save-button" type="submit">Save</button>
+          <button class="secondary" type="button" id="reset-button">Clear</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="company-list">
+      <div class="section-head">
+        <h2>Companies</h2>
+        <button class="secondary" type="button" id="refresh-button">Refresh</button>
+      </div>
+      <div id="companies"></div>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.querySelector("#status");
+    const form = document.querySelector("#company-form");
+    const formTitle = document.querySelector("#form-title");
+    const saveButton = document.querySelector("#save-button");
+    const resetButton = document.querySelector("#reset-button");
+    const refreshButton = document.querySelector("#refresh-button");
+    const listEl = document.querySelector("#companies");
+    const fields = ["name", "website", "telegram_chat", "description", "notes"];
+
+    let companies = [];
+
+    function setStatus(message) {
+      statusEl.textContent = message;
+    }
+
+    function payloadFromForm() {
+      const payload = {};
+      for (const field of fields) {
+        const value = document.querySelector(`#${field}`).value.trim();
+        if (value) {
+          payload[field] = value;
+        } else if (field !== "name") {
+          payload[field] = null;
+        }
+      }
+      return payload;
+    }
+
+    function resetForm() {
+      form.reset();
+      document.querySelector("#company-id").value = "";
+      formTitle.textContent = "New company";
+      saveButton.textContent = "Save";
+    }
+
+    function editCompany(company) {
+      document.querySelector("#company-id").value = company.id;
+      for (const field of fields) {
+        document.querySelector(`#${field}`).value = company[field] || "";
+      }
+      formTitle.textContent = `Edit #${company.id}`;
+      saveButton.textContent = "Update";
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function renderCompanies() {
+      if (!companies.length) {
+        listEl.innerHTML = '<div class="empty">No companies yet.</div>';
+        return;
+      }
+
+      listEl.innerHTML = "";
+      for (const company of companies) {
+        const row = document.createElement("div");
+        row.className = "company-row";
+
+        const content = document.createElement("div");
+        const title = document.createElement("p");
+        title.className = "company-title";
+        title.textContent = company.name;
+        content.appendChild(title);
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        for (const value of [company.website, company.telegram_chat]) {
+          if (!value) continue;
+          const item = document.createElement("span");
+          item.textContent = value;
+          meta.appendChild(item);
+        }
+        content.appendChild(meta);
+
+        const text = [company.description, company.notes].filter(Boolean).join("\n\n");
+        if (text) {
+          const description = document.createElement("p");
+          description.className = "description";
+          description.textContent = text;
+          content.appendChild(description);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        const editButton = document.createElement("button");
+        editButton.className = "secondary";
+        editButton.type = "button";
+        editButton.textContent = "Edit";
+        editButton.addEventListener("click", () => editCompany(company));
+
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "danger";
+        deleteButton.type = "button";
+        deleteButton.textContent = "Delete";
+        deleteButton.addEventListener("click", () => deleteCompany(company.id));
+
+        actions.append(editButton, deleteButton);
+        row.append(content, actions);
+        listEl.appendChild(row);
+      }
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: { "Content-Type": "application/json" },
+        ...options
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Request failed");
+      }
+      return data;
+    }
+
+    async function loadCompanies() {
+      refreshButton.disabled = true;
+      try {
+        const data = await requestJson("/api/companies");
+        companies = data.companies;
+        renderCompanies();
+        setStatus(`${data.total} companies`);
+      } catch (error) {
+        setStatus(error.message);
+      } finally {
+        refreshButton.disabled = false;
+      }
+    }
+
+    async function saveCompany(event) {
+      event.preventDefault();
+      const id = document.querySelector("#company-id").value;
+      const payload = payloadFromForm();
+      saveButton.disabled = true;
+      try {
+        if (id) {
+          await requestJson(`/api/companies/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(payload)
+          });
+        } else {
+          await requestJson("/api/companies", {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
+        }
+        resetForm();
+        await loadCompanies();
+      } catch (error) {
+        setStatus(error.message);
+      } finally {
+        saveButton.disabled = false;
+      }
+    }
+
+    async function deleteCompany(id) {
+      if (!window.confirm(`Delete company #${id}?`)) {
+        return;
+      }
+      try {
+        await requestJson(`/api/companies/${id}`, { method: "DELETE" });
+        await loadCompanies();
+      } catch (error) {
+        setStatus(error.message);
+      }
+    }
+
+    form.addEventListener("submit", saveCompany);
+    resetButton.addEventListener("click", resetForm);
+    refreshButton.addEventListener("click", loadCompanies);
+    loadCompanies();
+  </script>
+</body>
+</html>

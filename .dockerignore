@@ -1,2 +1,11 @@
-pgdata
-
+.git
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.local
+data/
+sessions/
+*.db
+*.sqlite
+*.sqlite3

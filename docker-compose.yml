@@ -1,102 +1,101 @@
 services:
   tg_api:
     build: .
-    container_name: tg_telethon_api
+    container_name: tg_crm_api
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    network_mode: host
     env_file:
       - .env
-    volumes:
-      # Храним сессии снаружи контейнера, чтобы не терять авторизацию
-      - ./sessions:/app/sessions
-    networks:
-      - app-network
-
-  db:
-    image: postgres:16
-    container_name: tg_postgres
-    restart: unless-stopped
-    profiles:
-      - all
-      - vpn
     environment:
-      POSTGRES_DB: tg_client
-      POSTGRES_USER: tg_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-n8npass}
+      DATABASE_PATH: /app/data/app.db
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
+      TELEGRAM_CLIENT_API_ID: ${TELEGRAM_CLIENT_API_ID:-}
+      TELEGRAM_CLIENT_API_HASH: ${TELEGRAM_CLIENT_API_HASH:-}
+      PROXY_URL: ${PROXY_URL:-}
     volumes:
-      - ./pgdata:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
+      - ./data:/app/data
+      - tg_crm_sessions:/app/sessions
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tg_user -d tg_client"]
-      interval: 5s
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/status').read()\""]
+      interval: 15s
       timeout: 5s
-      retries: 5
-    networks:
-      - app-network
+      start_period: 10s
+      retries: 10
+    # in host mode API is available directly on 127.0.0.1:8000
+    expose:
+      - "8000"
 
-  adminer:
+  tg_api_proxy:
+    image: nginx:1.27-alpine
+    container_name: tg_crm_api_proxy
+    network_mode: host
+    depends_on:
+      tg_api:
+        condition: service_healthy
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
+  tg_db:
+    image: postgres:16-alpine
+    container_name: tg_crm_db
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tgcrm}
+      POSTGRES_USER: ${POSTGRES_USER:-tgcrm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tgcrm_pass}
+    volumes:
+      - tg_crm_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tgcrm} -d ${POSTGRES_DB:-tgcrm}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 10
+    profiles:
+      - all
+
+  tg_n8n:
+    image: n8nio/n8n:1
+    container_name: tg_crm_n8n
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      tg_db:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: 127.0.0.1
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-tgcrm}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-tgcrm}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-tgcrm_pass}
+      N8N_HOST: ${N8N_HOST:-0.0.0.0}
+      N8N_PORT: ${N8N_PORT:-5678}
+      N8N_PROTOCOL: http
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
+      N8N_USER_MANAGEMENT_DISABLED: "true"
+      NODE_ENV: production
+    volumes:
+      - tg_crm_n8n_data:/home/node/.n8n
+    # in host mode, n8n is available directly on 127.0.0.1:${N8N_PORT:-5678}
+    profiles:
+      - all
+
+  tg_adminer:
     image: adminer:latest
-    container_name: tg_adminer
+    container_name: tg_crm_adminer
     restart: unless-stopped
+    network_mode: host
+    depends_on:
+      tg_db:
+        condition: service_healthy
     profiles:
       - all
-      - vpn
-    ports:
-      - "8080:8080"
-    environment:
-      ADMINER_DEFAULT_SERVER: db
-    depends_on:
-      db:
-        condition: service_healthy
-    networks:
-      - app-network
-
-  n8n:
-    image: n8nio/n8n:latest
-    restart: unless-stopped
-    profiles:
-      - all
-      - vpn
-    ports:
-      - "5678:5678"
-    environment:
-      N8N_PORT: 5678
-      N8N_HOST: 0.0.0.0
-      N8N_BASIC_AUTH_ACTIVE: "true"
-      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-user}
-      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-user}
-      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://127.0.0.1:5678}
-      WEBHOOK_URL: ${WEBHOOK_URL:-http://127.0.0.1:5678}
-      N8N_SECURE_COOKIE: "false"
-    volumes:
-      - n8n_data:/home/node/.n8n
-    depends_on:
-      db:
-        condition: service_healthy
-    networks:
-      - app-network
-
-  proxy:
-    image: ghcr.io/sagernet/sing-box:latest
-    container_name: tg_proxy
-    restart: unless-stopped
-    profiles:
-      - vpn
-    command: ["run", "-c", "/etc/sing-box/config.json"]
-    cap_add:
-      - NET_ADMIN
-    security_opt:
-      - no-new-privileges:true
-    volumes:
-      - ./config.json:/etc/sing-box/config.json:ro
-    networks:
-      - app-network
-
-networks:
-  app-network:
-    driver: bridge
 
 volumes:
-  n8n_data:
+  tg_crm_sessions:
+  tg_crm_pgdata:
+  tg_crm_n8n_data:

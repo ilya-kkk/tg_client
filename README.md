@@ -1,190 +1,107 @@
-# Telegram REST API
+# Telegram CRM API
 
-REST API для работы с Telegram через Telethon в мультисессионном режиме.
+Minimal local CRM shell plus a Telethon-backed REST API for Telegram research.
 
-## Что умеет API
+## What Is Included
 
-- Авторизация по номеру телефона (код + 2FA).
-- Работа с несколькими Telegram-аккаунтами через `session_id`.
-- Хранение сессий в Supabase (`telegram_sessions`), а не в локальных `.session` файлах.
-- Работа с чатами, сообщениями, каналами, пользователями, ботами и аккаунтом.
+- FastAPI backend with Swagger at `http://localhost:80/docs`.
+- Minimal company settings UI at `http://localhost:80/`.
+- Local SQLite storage in `data/app.db`.
+- Multi-session Telegram auth via Telethon `StringSession`.
+- All services are orchestrated by one Docker Compose file.
+- Optional PostgreSQL + Adminer + N8N services via Compose profile `all`.
 
-## Требования
+## Requirements
 
-- Python 3.8+
-- `API_ID` и `API_HASH` от Telegram (`https://my.telegram.org/apps`)
-- Supabase проект с таблицей `telegram_sessions`
+- Python 3.11+
+- Telegram `API_ID` and `API_HASH` from `https://my.telegram.org/apps`
 
-## Установка
+## Setup
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-## Переменные окружения
+Edit `.env`:
 
 ```env
-API_ID=ваш_api_id
-API_HASH=ваш_api_hash
-SUPABASE_URL=https://<project>.supabase.co
-SUPABASE_KEY=<service_role_or_anon_key>
+API_ID=your_api_id_here
+API_HASH=your_api_hash_here
+DATABASE_PATH=data/app.db
 ```
 
-## Запуск
+## Run Locally
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-- API: `http://localhost:8000`
+Open:
+
+- CRM UI: `http://localhost:8000` (если стартовали без прокси)
+- API status: `http://localhost:8000/api/status`
 - Swagger: `http://localhost:8000/docs`
 
-## Схема мультисессий
-
-Для всех рабочих вызовов используется путь с `session_id`:
-
-- `POST /sessions/{session_id}/auth/login`
-- `POST /sessions/{session_id}/auth/verify`
-- `POST /sessions/{session_id}/auth/password`
-- `GET /sessions/{session_id}/...` для остальных операций
-
-Одна сессия = один Telegram-аккаунт.
-
-## Примеры
-
-### 1. Отправить код авторизации
+## Run In Docker
 
 ```bash
-curl -X POST "http://localhost:8000/sessions/work_account/auth/login" \
+docker compose up --build
+```
+
+- API is available at `http://localhost:80/`
+- API status: `http://localhost:80/api/status`
+- Swagger: `http://localhost:80/docs`
+
+Data is stored in named Docker volume `tg_crm_data`.
+
+Run full stack (PostgreSQL + Adminer + N8N) with:
+
+```bash
+docker compose --profile all up --build
+```
+
+## Company API
+
+```bash
+curl http://localhost:80/api/companies
+
+curl -X POST http://localhost:80/api/companies \
   -H "Content-Type: application/json" \
-  -d '{"phone": "+79991234567"}'
+  -d '{"name":"Acme","website":"https://example.com","telegram_chat":"@acme"}'
 ```
 
-### 2. Подтвердить код
+## Telegram Session Flow
+
+Use a stable `session_id` for each Telegram account.
 
 ```bash
-curl -X POST "http://localhost:8000/sessions/work_account/auth/verify" \
+curl -X POST "http://localhost:80/sessions/main/auth/login" \
   -H "Content-Type: application/json" \
-  -d '{"phone": "+79991234567", "code": "12345"}'
-```
+  -d '{"phone":"+79991234567"}'
 
-### 3. Ввести 2FA пароль (если нужен)
-
-```bash
-curl -X POST "http://localhost:8000/sessions/work_account/auth/password" \
+curl -X POST "http://localhost:80/sessions/main/auth/verify" \
   -H "Content-Type: application/json" \
-  -d '{"password": "your_2fa_password"}'
+  -d '{"phone":"+79991234567","code":"12345"}'
 ```
 
-### 4. Получить чаты
+If Telegram asks for 2FA:
 
 ```bash
-curl -X GET "http://localhost:8000/sessions/work_account/chats?limit=50"
-```
-
-### 5. Отправить сообщение
-
-```bash
-curl -X POST "http://localhost:8000/sessions/work_account/messages/send" \
+curl -X POST "http://localhost:80/sessions/main/auth/password" \
   -H "Content-Type: application/json" \
-  -d '{"chat_identifier": "@username", "message": "Привет"}'
+  -d '{"password":"your_2fa_password"}'
 ```
 
-### 6. Список/статус/удаление сессий
+Useful research endpoints:
 
-```bash
-curl -X GET "http://localhost:8000/sessions"
-curl -X GET "http://localhost:8000/sessions/work_account"
-curl -X DELETE "http://localhost:8000/sessions/work_account"
-```
-
-## Основные endpoints
-
-### Системные
-
-- `GET /` — health-check API и доступность Supabase.
-
-### Управление сессиями
-
-- `GET /sessions`
-- `GET /sessions/{session_id}`
-- `DELETE /sessions/{session_id}`
-
-### Авторизация
-
-- `POST /sessions/{session_id}/auth/login`
-- `POST /sessions/{session_id}/auth/verify`
-- `POST /sessions/{session_id}/auth/password`
-
-### Чаты
-
-- `GET /sessions/{session_id}/chats`
-- `GET /sessions/{session_id}/chats/folders`
-- `POST /sessions/{session_id}/chats/folder`
-- `POST /sessions/{session_id}/chats/archive`
-- `POST /sessions/{session_id}/chats/create`
-- `POST /sessions/{session_id}/chats/invite`
-- `POST /sessions/{session_id}/chats/remove-users`
-- `PATCH /sessions/{session_id}/chats/participants/permissions`
-- `GET /sessions/{session_id}/chats/participants`
-- `GET /sessions/{session_id}/chats/admins`
-- `GET /sessions/{session_id}/chats/info`
-- `PATCH /sessions/{session_id}/chats/info`
-- `PATCH /sessions/{session_id}/chats/photo`
-
-### Сообщения
-
-- `POST /sessions/{session_id}/messages/send`
-- `POST /sessions/{session_id}/messages/send-media`
-- `POST /sessions/{session_id}/messages/send-voice`
-- `POST /sessions/{session_id}/messages/send-sticker-gif`
-- `POST /sessions/{session_id}/messages/send-location`
-- `POST /sessions/{session_id}/messages/send-contact`
-- `PATCH /sessions/{session_id}/messages/edit`
-- `DELETE /sessions/{session_id}/messages/delete`
-- `POST /sessions/{session_id}/messages/forward`
-- `POST /sessions/{session_id}/messages/reply`
+- `GET /sessions/{session_id}/chats?limit=100`
+- `GET /sessions/{session_id}/messages?chat_identifier=@chat&limit=50`
 - `POST /sessions/{session_id}/messages/search`
-- `POST /sessions/{session_id}/messages/filter`
-- `POST /sessions/{session_id}/messages/read`
-- `POST /sessions/{session_id}/messages/pin`
-- `POST /sessions/{session_id}/messages/reaction`
-- `GET /sessions/{session_id}/messages`
-- `GET /sessions/{session_id}/messages/media`
+- `GET /sessions/{session_id}/messages/media?chat_identifier=@chat&message_id=123`
 
-### Пользователи
+## Security Notes
 
-- `GET /sessions/{session_id}/users/info`
-- `GET /sessions/{session_id}/users/contacts`
-- `POST /sessions/{session_id}/users/contacts/manage`
-- `POST /sessions/{session_id}/users/block`
-- `GET /sessions/{session_id}/users/status`
-
-### Каналы
-
-- `POST /sessions/{session_id}/channels/subscribe`
-- `POST /sessions/{session_id}/channels/unsubscribe`
-- `GET /sessions/{session_id}/channels/posts`
-- `POST /sessions/{session_id}/channels/posts/publish`
-- `PATCH /sessions/{session_id}/channels/posts/edit`
-- `DELETE /sessions/{session_id}/channels/posts`
-
-### Боты
-
-- `POST /sessions/{session_id}/bots/command`
-- `POST /sessions/{session_id}/bots/buttons/click`
-
-### Аккаунт
-
-- `GET /sessions/{session_id}/account/me`
-- `PATCH /sessions/{session_id}/account/username`
-- `PATCH /sessions/{session_id}/account/name`
-- `PATCH /sessions/{session_id}/account/about`
-- `PATCH /sessions/{session_id}/account/photo`
-- `POST /sessions/{session_id}/account/sessions/reset`
-
-## Безопасность
-
-- Не коммитьте `.env`, ключи Supabase и Telegram credentials.
-- Используйте HTTPS в продакшене.
-- Не логируйте коды подтверждения и 2FA-пароли.
+- Do not commit `.env` or `data/app.db`.
+- Do not expose this API publicly without auth in front of it.
+- Treat Telegram verification codes and 2FA passwords as secrets.
